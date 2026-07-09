@@ -54,14 +54,13 @@ containing a merge commit is refused (linear history only, in v1).
 
 | Key | Action |
 |-----|--------|
-| `up`/`down`, `k`/`j` | select a commit |
+| `up`/`down`, `k`/`j` | select a commit; in an expanded row, step between the author and committer lines |
 | `left`/`right`, `h`/`l` | move between date fields |
 | `/`, `n` / `N` | search commits by summary or hash; jump to next / previous match |
 | `+`/`-`, `shift+up`/`shift+down`, `ctrl-a`/`ctrl-x` | adjust the focused field (calendar carry) |
 | `e` / `Enter` | type an absolute date (`YYYY-MM-DD HH:MM`) |
-| `Space` | expand a row to edit author/committer (and offsets) separately |
-| `Tab` / `shift-Tab` | switch author <-> committer in an expanded row (expand with `Space` first) |
-| `s` | toggle single / shift mode |
+| `Space` | expand a row to edit author/committer (and offsets) separately; `up`/`down` then step between the two lines |
+| `Tab` / `shift-Tab`, `s` | toggle single / shift mode |
 | `c` | copy the previous (older) commit's time |
 | `=` | distribute the middle commits evenly (first and last fixed) |
 | `u` / `U` | reset the selected commit / reset all commits (confirm) |
@@ -76,9 +75,16 @@ uppercase `W`/`Q` skip the prompt. The `/` search prompt supports
 readline-style line editing (`ctrl-a`/`ctrl-e`, `ctrl-w`, `ctrl-u`,
 `ctrl-k`, and word motion with `ctrl-left`/`ctrl-right`).
 
-One date is applied to both the author and committer by default. Each
-commit keeps its original UTC offset; the wall-clock time you edit is
-interpreted in that offset.
+One date is applied to both the author and committer by default: every
+edit in the collapsed view (typing, `+`/`-`, and the shift cascade)
+keeps the two equal. A commit whose author and committer originally
+differ (as a rebase or amend leaves them) is unified to a single date
+the moment you edit it here, so tools that show the author date (`git
+log`, GitHub) and tools that show the committer date (GitLab's web UI,
+tig) all display the value you set. To keep or introduce a difference,
+expand the row with `Space` and edit the author and committer lines
+separately. Each commit keeps its original UTC offset; the wall-clock
+time you edit is interpreted in that offset.
 
 ### Edit modes
 

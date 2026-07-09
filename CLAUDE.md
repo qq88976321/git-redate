@@ -85,8 +85,11 @@ the terminal so it can be unit-tested directly.
 - Range: `git redate <commit>` = `<commit>..HEAD`, exclusive of
   <commit> (git `A..B` semantics). Bare `git redate` = last N (default
   10, `-n`). `A..B` supported. `--root` includes the parentless commit.
-- Timestamp: one date applied to both author + committer by default;
-  Tab expands a row to edit author/committer (and offsets) separately.
+- Timestamp: one date applied to both author + committer by default -
+  EVERY edit in the collapsed view (set/bump/cascade) collapses committer
+  onto author (value + offset), so an originally-differing pair is
+  unified when edited. Space expands a row to edit author/committer (and
+  offsets) separately; that is the only way to keep/introduce a gap.
 - Timezone: each commit's original offset is preserved; the edited
   wall-clock time is interpreted in that offset.
 - Edit modes: `single` (only the selected commit) and `shift` (edit a
@@ -102,12 +105,14 @@ the terminal so it can be unit-tested directly.
   originally-signed commits are RE-signed via the repo's signing config
   (SSH/OpenPGP, through gpg/ssh-keygen). Signing failure aborts the
   rewrite; `--no-sign` drops signatures; x509/gpgsm is unsupported.
-- Keymap follows TUI conventions: Space expand, Tab/Shift-Tab
-  author/committer, u reset (U reset-all, confirmed), +/- and
-  ctrl-a/ctrl-x adjust, ctrl-z/ctrl-r undo/redo, / search (readline
-  input, n/N cycle), w/W write (confirm/force), q/Q/Esc quit
-  (confirm/force), Ctrl-C abort. The footer packs tiered hints into up to
-  two rows; the ? help panel is the full list and Esc closes it.
+- Keymap follows TUI conventions: Space expand, up/down (j/k) move
+  between commits and, in an expanded row, step author<->committer,
+  Tab/Shift-Tab (also s) toggle single/shift mode, u reset (U reset-all,
+  confirmed), +/- and ctrl-a/ctrl-x adjust, ctrl-z/ctrl-r undo/redo,
+  / search (readline input, n/N cycle), w/W write (confirm/force),
+  q/Q/Esc quit (confirm/force), Ctrl-C abort. The footer packs tiered
+  hints into up to two rows; the ? help panel is the full list and Esc
+  closes it.
 
 ## Manual / driving tests
 
