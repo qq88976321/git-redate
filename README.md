@@ -56,21 +56,25 @@ containing a merge commit is refused (linear history only, in v1).
 |-----|--------|
 | `up`/`down`, `k`/`j` | select a commit |
 | `left`/`right`, `h`/`l` | move between date fields |
+| `/`, `n` / `N` | search commits by summary or hash; jump to next / previous match |
 | `+`/`-`, `shift+up`/`shift+down`, `ctrl-a`/`ctrl-x` | adjust the focused field (calendar carry) |
 | `e` / `Enter` | type an absolute date (`YYYY-MM-DD HH:MM`) |
 | `Space` | expand a row to edit author/committer (and offsets) separately |
-| `Tab` / `shift-Tab` | switch author <-> committer in an expanded row |
+| `Tab` / `shift-Tab` | switch author <-> committer in an expanded row (expand with `Space` first) |
 | `s` | toggle single / shift mode |
 | `c` | copy the previous (older) commit's time |
-| `=` | spread commits evenly in time |
-| `u` | reset the selected commit |
-| `?` / `F1` | help overlay |
+| `=` | distribute the middle commits evenly (first and last fixed) |
+| `u` / `U` | reset the selected commit / reset all commits (confirm) |
+| `ctrl-z` / `ctrl-r` | undo / redo the last edit |
+| `?` / `F1` | help overlay (`Esc` inside it returns to the editor) |
 | `w` / `W` | write changes (confirm / force) |
 | `q` / `Q` / `Esc` | quit (confirm / force);  `Ctrl-C` aborts |
 
 Bindings follow common TUI conventions (lazygit, gitui, tig, vim). `w`
 and `q`/`Esc` ask for confirmation when there are unsaved edits; the
-uppercase `W`/`Q` skip the prompt.
+uppercase `W`/`Q` skip the prompt. The `/` search prompt supports
+readline-style line editing (`ctrl-a`/`ctrl-e`, `ctrl-w`, `ctrl-u`,
+`ctrl-k`, and word motion with `ctrl-left`/`ctrl-right`).
 
 One date is applied to both the author and committer by default. Each
 commit keeps its original UTC offset; the wall-clock time you edit is

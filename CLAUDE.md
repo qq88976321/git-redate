@@ -103,8 +103,11 @@ the terminal so it can be unit-tested directly.
   (SSH/OpenPGP, through gpg/ssh-keygen). Signing failure aborts the
   rewrite; `--no-sign` drops signatures; x509/gpgsm is unsupported.
 - Keymap follows TUI conventions: Space expand, Tab/Shift-Tab
-  author/committer, u reset, +/- and ctrl-a/ctrl-x adjust, w/W write
-  (confirm/force), q/Q/Esc quit (confirm/force), Ctrl-C abort.
+  author/committer, u reset (U reset-all, confirmed), +/- and
+  ctrl-a/ctrl-x adjust, ctrl-z/ctrl-r undo/redo, / search (readline
+  input, n/N cycle), w/W write (confirm/force), q/Q/Esc quit
+  (confirm/force), Ctrl-C abort. The footer packs tiered hints into up to
+  two rows; the ? help panel is the full list and Esc closes it.
 
 ## Manual / driving tests
 
