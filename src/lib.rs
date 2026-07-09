@@ -5,4 +5,5 @@
 //! parsing) can be unit-tested without a terminal or a real repository.
 //! Modules are declared here as they are implemented.
 
+pub mod datetime;
 pub mod error;
