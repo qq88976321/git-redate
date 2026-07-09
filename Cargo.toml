@@ -26,9 +26,11 @@ todo = "warn"
 unimplemented = "warn"
 
 [dependencies]
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 gix = "0.85"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
+ratatui = "0.30"
 thiserror = "2"
 
 [profile.release]
