@@ -7,7 +7,8 @@
 //! conventions (lazygit/gitui/tig/k9s/vim): `j`/`k` + arrows to move,
 //! `h`/`l` + arrows to pick a field, `+`/`-` and `Shift+arrows` (and
 //! vim `Ctrl-A`/`Ctrl-X`) to adjust, `u` to reset (not `d`, which reads
-//! as delete), `Space` to disclose, `Tab` to move between sub-fields.
+//! as delete), `Space` to disclose (up/down then step through the
+//! author/committer lines), `Tab` to toggle single/shift mode.
 
 use crate::lineedit::LineOp;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -26,7 +27,6 @@ pub enum Action {
     Decrement,
     // Row / mode toggles.
     ToggleExpand,
-    ToggleSubField,
     ToggleMode,
     CopyPrevious,
     Distribute,
@@ -178,7 +178,9 @@ fn map_navigate(key: KeyEvent) -> Action {
         KeyCode::Char('+') => Action::Increment,
         KeyCode::Char('-') => Action::Decrement,
         KeyCode::Char(' ') => Action::ToggleExpand,
-        KeyCode::Tab | KeyCode::BackTab => Action::ToggleSubField,
+        // Tab (and `s`) toggle single <-> shift; author/committer in the
+        // expanded view is reached with up/down, not Tab.
+        KeyCode::Tab | KeyCode::BackTab => Action::ToggleMode,
         KeyCode::Char('s') => Action::ToggleMode,
         KeyCode::Char('c') => Action::CopyPrevious,
         KeyCode::Char('=') => Action::Distribute,
@@ -254,10 +256,12 @@ mod tests {
     }
 
     #[test]
-    fn disclosure_and_subfield() {
+    fn disclosure_and_mode_toggle() {
         assert_eq!(nav(KeyCode::Char(' ')), Action::ToggleExpand);
-        assert_eq!(nav(KeyCode::Tab), Action::ToggleSubField);
-        assert_eq!(nav(KeyCode::BackTab), Action::ToggleSubField);
+        // Tab/Shift-Tab (and `s`) toggle single <-> shift mode.
+        assert_eq!(nav(KeyCode::Tab), Action::ToggleMode);
+        assert_eq!(nav(KeyCode::BackTab), Action::ToggleMode);
+        assert_eq!(nav(KeyCode::Char('s')), Action::ToggleMode);
     }
 
     #[test]

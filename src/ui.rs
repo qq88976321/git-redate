@@ -154,7 +154,7 @@ const HINTS: &[Hint] = &[
         tier: 1,
     },
     Hint {
-        text: "[s] mode",
+        text: "[Tab] mode",
         tier: 1,
     },
     Hint {
@@ -167,7 +167,7 @@ const HINTS: &[Hint] = &[
     },
     // tier 2: niche, dropped first (and only useful in context).
     Hint {
-        text: "[Tab] author/commit (expand first)",
+        text: "[up/dn] author/commit (expand first)",
         tier: 2,
     },
     Hint {
@@ -318,17 +318,16 @@ fn help_widget() -> Paragraph<'static> {
     let lines = vec![
         Line::from(Span::styled("git-redate keys", head)),
         Line::from(""),
-        entry("up/down, k/j", "select commit"),
+        entry(
+            "up/down, k/j",
+            "select commit; step author <-> committer when expanded",
+        ),
         entry("left/right, h/l", "move date field"),
         entry("/, n / N", "search commits; next / prev match"),
         entry("+/-, shift+up/dn", "adjust the field (calendar carry)"),
         entry("ctrl-a / ctrl-x", "adjust the field (vim-style)"),
         entry("Space", "expand author/committer (and offset)"),
-        entry(
-            "Tab / shift-Tab",
-            "switch author <-> committer (expand with Space first)",
-        ),
-        entry("s", "toggle single <-> shift (cascade)"),
+        entry("Tab / shift-Tab, s", "toggle single <-> shift (cascade)"),
         entry("e / Enter", "type an absolute date"),
         entry("c", "copy the previous (older) commit's time"),
         entry(
@@ -621,14 +620,17 @@ mod tests {
                 .join(" ")
         }
 
-        // Wide: at most two rows, and the essentials are present.
+        // Wide: at most two rows, and the essentials (plus the tier-1
+        // mode toggle) are present.
         let wide = hint_lines(200);
         assert!(wide.len() <= 2);
         let text = joined(&wide);
         assert!(text.contains("write") && text.contains("quit"));
+        assert!(text.contains("mode"));
 
         // Narrow: still capped at two rows, and the tier-2 niceties
-        // (Tab, spread) are dropped before the essentials.
+        // (spread, the up/down author-committer note) drop before the
+        // essentials.
         let narrow = hint_lines(30);
         assert!(narrow.len() <= 2);
         let ntext = joined(&narrow);

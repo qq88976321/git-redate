@@ -224,10 +224,7 @@ impl App {
         self.selected = s.selected.min(self.commits.len().saturating_sub(1));
         self.component = s.component;
         self.sub = s.sub;
-        // The offset field only exists in the expanded view.
-        if self.component == Component::Offset && !self.expanded() {
-            self.component = Component::Minute;
-        }
+        self.clamp_component();
     }
 
     fn undo(&mut self) {
@@ -273,25 +270,13 @@ impl App {
 
     fn handle_navigate(&mut self, action: Action) {
         match action {
-            Action::PrevRow => self.selected = self.selected.saturating_sub(1),
-            Action::NextRow => {
-                if self.selected + 1 < self.commits.len() {
-                    self.selected += 1;
-                }
-            }
+            Action::PrevRow => self.move_up(),
+            Action::NextRow => self.move_down(),
             Action::PrevComponent => self.move_component(-1),
             Action::NextComponent => self.move_component(1),
             Action::Increment => self.bump(1),
             Action::Decrement => self.bump(-1),
             Action::ToggleExpand => self.toggle_expand(),
-            Action::ToggleSubField => {
-                if self.expanded() {
-                    self.sub = match self.sub {
-                        SubField::Author => SubField::Committer,
-                        SubField::Committer => SubField::Author,
-                    };
-                }
-            }
             Action::ToggleMode => {
                 self.edit_mode = match self.edit_mode {
                     EditMode::Single => EditMode::Shift,
@@ -524,6 +509,44 @@ impl App {
         }
     }
 
+    /// Vertical navigation flows through a flattened list of focus
+    /// stops: an expanded commit contributes two (author then
+    /// committer), a collapsed one a single stop. Down/Up step within an
+    /// expanded commit's two lines before crossing to the neighbour.
+    fn move_down(&mut self) {
+        if self.expanded() && self.sub == SubField::Author {
+            self.sub = SubField::Committer;
+        } else if self.selected + 1 < self.commits.len() {
+            self.selected += 1;
+            self.sub = SubField::Author;
+        }
+        self.clamp_component();
+    }
+
+    fn move_up(&mut self) {
+        if self.expanded() && self.sub == SubField::Committer {
+            self.sub = SubField::Author;
+        } else if self.selected > 0 {
+            self.selected -= 1;
+            // Entering an expanded commit from below lands on its
+            // committer (the visually nearest of its two lines).
+            self.sub = if self.expanded() {
+                SubField::Committer
+            } else {
+                SubField::Author
+            };
+        }
+        self.clamp_component();
+    }
+
+    /// The offset field only exists in the expanded view; drop back to
+    /// the minute when the cursor lands on a collapsed commit.
+    fn clamp_component(&mut self) {
+        if !self.expanded() && self.component == Component::Offset {
+            self.component = Component::Minute;
+        }
+    }
+
     fn move_component(&mut self, delta: i32) {
         let comps = self.components();
         let idx = comps.iter().position(|&c| c == self.component).unwrap_or(0);
@@ -554,9 +577,7 @@ impl App {
         }
         self.sub = SubField::Author;
         // Leaving the expanded view drops the offset field from the cycle.
-        if !self.expanded() && self.component == Component::Offset {
-            self.component = Component::Minute;
-        }
+        self.clamp_component();
     }
 }
 
@@ -648,11 +669,51 @@ mod tests {
         a.handle(Action::Increment);
         assert_eq!(datetime::format(a.commits[0].author), "2024-01-01 02:00");
         assert_eq!(datetime::format(a.commits[0].committer), "2024-01-01 01:00");
-        // Switch to committer and edit it independently.
-        a.handle(Action::ToggleSubField);
+        // Down steps onto the committer line and edits it independently.
+        a.handle(Action::NextRow);
+        assert_eq!(a.sub, SubField::Committer);
         assert_eq!(a.target(), Target::Committer);
         a.handle(Action::Increment);
         assert_eq!(datetime::format(a.commits[0].committer), "2024-01-01 02:00");
+    }
+
+    #[test]
+    fn arrows_flow_through_expanded_subfields() {
+        let mut a = app(
+            &["2024-01-01 01:00", "2024-01-01 02:00", "2024-01-01 03:00"],
+            EditMode::Single,
+        );
+        // Expand the middle commit; it now has two focus stops.
+        a.selected = 1;
+        a.handle(Action::ToggleExpand);
+        assert!(a.expanded());
+        assert_eq!(a.sub, SubField::Author);
+        // Down steps author -> committer within the expanded commit...
+        a.handle(Action::NextRow);
+        assert_eq!((a.selected, a.sub), (1, SubField::Committer));
+        // ...then crosses to the next (collapsed) commit's single stop.
+        a.handle(Action::NextRow);
+        assert_eq!((a.selected, a.sub), (2, SubField::Author));
+        // Up from a collapsed commit lands on the expanded neighbour's
+        // committer (its nearest line), then its author, then crosses.
+        a.handle(Action::PrevRow);
+        assert_eq!((a.selected, a.sub), (1, SubField::Committer));
+        a.handle(Action::PrevRow);
+        assert_eq!((a.selected, a.sub), (1, SubField::Author));
+        a.handle(Action::PrevRow);
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn leaving_expanded_commit_clamps_offset_component() {
+        let mut a = app(&["2024-01-01 01:00", "2024-01-01 02:00"], EditMode::Single);
+        a.handle(Action::ToggleExpand); // expand commit 0
+        a.sub = SubField::Author;
+        a.component = Component::Offset; // only valid while expanded
+        a.handle(Action::NextRow); // -> committer, still expanded
+        assert_eq!(a.component, Component::Offset);
+        a.handle(Action::NextRow); // -> commit 1 (collapsed)
+        assert_eq!((a.selected, a.component), (1, Component::Minute));
     }
 
     #[test]
