@@ -27,6 +27,7 @@ unimplemented = "warn"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+gix = "0.85"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 thiserror = "2"
 

@@ -36,6 +36,14 @@ pub enum RedateError {
     #[error("range '{0}' needs both endpoints, as in A..B")]
     BadRange(String),
 
+    /// The range's lower boundary is not an ancestor of the tip.
+    #[error("'{0}' is not an ancestor of HEAD, so it cannot bound the range")]
+    NotAnAncestor(String),
+
+    /// The range does not end at HEAD, which v1 cannot rewrite safely.
+    #[error("git-redate v1 can only rewrite a range that ends at HEAD")]
+    TipNotHead,
+
     /// The interactive editor was requested without a terminal.
     #[error("git-redate needs an interactive terminal (use --dry-run in scripts)")]
     NotATty,
