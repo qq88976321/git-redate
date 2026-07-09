@@ -211,6 +211,14 @@ pub fn reset(commits: &mut [EditableCommit], i: usize) {
     commits[i].committer = commits[i].original.committer;
 }
 
+/// Reset every commit to its snapshot.
+pub fn reset_all(commits: &mut [EditableCommit]) {
+    for ec in commits.iter_mut() {
+        ec.author = ec.original.author;
+        ec.committer = ec.original.committer;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +371,16 @@ mod tests {
         assert!(cs[0].changed());
         reset(&mut cs, 0);
         assert!(!cs[0].changed());
+    }
+
+    #[test]
+    fn reset_all_restores_every_commit() {
+        let mut cs = editable(&["2024-01-01 01:00", "2024-01-01 02:00", "2024-01-01 03:00"]);
+        bump(&mut cs, 0, Target::Both, Component::Day, 5, false);
+        bump(&mut cs, 2, Target::Author, Component::Hour, 1, false);
+        assert!(any_changed(&cs));
+        reset_all(&mut cs);
+        assert!(cs.iter().all(|c| !c.changed()));
     }
 
     #[test]
