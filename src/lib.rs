@@ -5,10 +5,13 @@
 //! parsing) can be unit-tested without a terminal or a real repository.
 //! Modules are declared here as they are implemented.
 
+pub mod app;
 pub mod cli;
 pub mod config;
 pub mod datetime;
 pub mod error;
+pub mod input;
 pub mod model;
 pub mod repo;
 pub mod rewrite;
+pub mod ui;
