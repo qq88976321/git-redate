@@ -1,0 +1,32 @@
+[package]
+name = "git-redate"
+version = "0.1.0"
+edition = "2021"
+description = "Interactively edit git commit dates from a modern terminal UI"
+license = "MIT"
+# MSRV floor. gitoxide (gix 0.85) requires Rust 1.85, which sets the
+# minimum for the whole crate. The local toolchain is newer; the CI
+# msrv job stays commented until a 1.85 build is verified (mirrors the
+# CL-05 approach in herdr-copy-search).
+rust-version = "1.85"
+
+# Invoked as `git redate`: git dispatches the `redate` subcommand to a
+# `git-redate` binary on PATH, so the bin name must be exactly this.
+[[bin]]
+name = "git-redate"
+path = "src/main.rs"
+
+# Lint policy lives here, not in source attributes.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[dependencies]
+
+[profile.release]
+lto = true
+strip = true

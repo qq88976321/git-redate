@@ -1,0 +1,4 @@
+/target
+
+# Zensical docs site (website/): build output.
+/website/site/
