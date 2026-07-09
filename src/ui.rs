@@ -29,11 +29,13 @@ const PEACH: Color = Color::Rgb(0xfa, 0xb3, 0x87);
 const YELLOW: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
 const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
 const BLUE: Color = Color::Rgb(0x89, 0xb4, 0xfa);
+const SKY: Color = Color::Rgb(0x89, 0xdc, 0xeb);
 const OVERLAY1: Color = Color::Rgb(0x7f, 0x84, 0x9c);
 
 // Semantic roles mapped onto the palette.
 const ACCENT: Color = MAUVE; // brand title, cursor, help title
 const INPUT: Color = BLUE; // edit prompt and help keys (interactive)
+const TIME: Color = SKY; // unedited timestamps (distinct from summaries)
 const CHANGED: Color = GREEN; // edited timestamps and the "*" marker
 const DIM: Color = OVERLAY1; // hashes, labels, footer hints, borders
 const CAUTION: Color = PEACH; // dry-run, shift mode, write confirmation
@@ -252,9 +254,9 @@ fn date_spans(
     changed: bool,
 ) -> Vec<Span<'static>> {
     let base = if changed {
-        Style::default().fg(Color::Green)
+        Style::default().fg(CHANGED)
     } else {
-        Style::default()
+        Style::default().fg(TIME)
     };
     let hl = base.add_modifier(Modifier::REVERSED);
 
@@ -436,6 +438,14 @@ mod tests {
         terminal.draw(|f| render(f, &a)).unwrap();
         let buf = terminal.backend().buffer();
         assert_eq!(buf.cell((0, 0)).unwrap().fg, Color::Rgb(0xcb, 0xa6, 0xf7));
+
+        // An unedited timestamp is sky (distinct from the default summary).
+        let sky = Color::Rgb(0x89, 0xdc, 0xeb);
+        let has_sky = (0u16..90).any(|x| buf.cell((x, 2)).unwrap().fg == sky);
+        assert!(
+            has_sky,
+            "unedited commit row should contain sky timestamp cells"
+        );
 
         // Editing a commit turns its timestamp (and marker) green.
         let mut b = app();
