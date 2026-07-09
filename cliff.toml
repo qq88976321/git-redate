@@ -1,0 +1,73 @@
+# git-cliff configuration - https://git-cliff.org/docs/configuration
+#
+# git-cliff is a dev tool (like cargo-release), installed out-of-band;
+# it is NOT a Cargo dependency. It derives CHANGELOG.md from the
+# Conventional Commits this repo already mandates. Output follows the
+# Keep a Changelog convention. Kept ASCII-only on purpose (no emoji).
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+The format is based on Keep a Changelog, and this project adheres to
+Conventional Commits.
+"""
+# A Tera template rendered for each release. Scope renders inline as
+# **scope**: subject; a breaking change is tagged [**breaking**].
+body = """
+
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits %}
+        - {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+            {% if commit.breaking %}[**breaking**] {% endif %}\
+            {{ commit.message | upper_first }}\
+    {% endfor %}
+{% endfor %}
+"""
+trim = true
+render_always = true
+postprocessors = []
+
+[git]
+# Parse commits per the Conventional Commits spec.
+conventional_commits = true
+# Drop commits that do not match the spec (merge noise, WIP, etc.).
+filter_unconventional = true
+require_conventional = false
+split_commits = false
+commit_preprocessors = []
+# Keep breaking changes even if a parser would otherwise skip them.
+protect_breaking_commits = true
+# Group ordering uses an HTML-comment sort key that striptags removes
+# from the rendered heading, so headings stay plain ASCII words.
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Refactor" },
+    { message = "^doc", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Testing" },
+    { message = "^build", group = "<!-- 6 -->Build System" },
+    { message = "^ci", group = "<!-- 7 -->Continuous Integration" },
+    { message = "^style", group = "<!-- 8 -->Styling" },
+    # Drop cargo-release's own release commit and dependency bumps.
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^chore: Release", skip = true },
+    { message = "^chore\\(deps.*\\)", skip = true },
+    { message = "^chore", group = "<!-- 9 -->Miscellaneous" },
+    { message = "^revert", group = "<!-- 10 -->Revert" },
+    { message = ".*", group = "<!-- 11 -->Other" },
+]
+filter_commits = false
+fail_on_unmatched_commit = false
+link_parsers = []
+tag_pattern = "v[0-9]*"
+topo_order = false
+sort_commits = "oldest"
