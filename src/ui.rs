@@ -5,7 +5,7 @@
 //! alternate screen and restores them on drop or panic. The event loop
 //! lives in `main`.
 
-use crate::app::{App, Mode, SubField};
+use crate::app::{App, ConfirmKind, Mode, SubField};
 use crate::datetime::{self, Component, Stamp};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
@@ -56,15 +56,30 @@ fn title(app: &App) -> Paragraph<'static> {
     Paragraph::new(text).block(Block::default().borders(Borders::BOTTOM))
 }
 
+const HINTS: &str = "[up/down] row  [left/right] field  [+/-] adjust  [Space] expand  \
+     [Tab] author/committer  [s] mode  [e] type  [c] copy-prev  [=] spread  [u] reset  \
+     [?] help  [w] write  [q] quit";
+
 fn status(app: &App) -> Paragraph<'static> {
-    let line = if let Mode::Editing { buffer } = &app.mode {
-        format!("type date (YYYY-MM-DD HH:MM): {buffer}_    [Enter] apply  [Esc] cancel")
-    } else if let Some(msg) = &app.message {
-        msg.clone()
-    } else {
-        "[up/down] row  [left/right] field  [+/-] adjust  [Tab] expand  [t] author/committer  \
-         [s] mode  [e] type  [c] copy-prev  [=] spread  [d] reset  [?] help  [w] write  [q] quit"
-            .to_string()
+    let line = match &app.mode {
+        Mode::Editing { buffer } => {
+            format!("type date (YYYY-MM-DD HH:MM): {buffer}_    [Enter] apply  [Esc] cancel")
+        }
+        Mode::Confirm { kind } => {
+            let n = app.commits.iter().filter(|c| c.changed()).count();
+            match kind {
+                ConfirmKind::Write => {
+                    format!("rewrite {n} commit(s)?   [y] yes    [n/Esc] no")
+                }
+                ConfirmKind::Quit => {
+                    format!("discard {n} change(s) and quit?   [y] yes    [n/Esc] no")
+                }
+            }
+        }
+        Mode::Navigate => match &app.message {
+            Some(msg) => msg.clone(),
+            None => HINTS.to_string(),
+        },
     };
     Paragraph::new(line)
         .wrap(Wrap { trim: true })
@@ -75,17 +90,21 @@ fn help_widget() -> Paragraph<'static> {
     let lines = vec![
         Line::from("git-redate keys"),
         Line::from(""),
-        Line::from("  up/down, k/j     select commit"),
-        Line::from("  left/right, h/l  move date field"),
-        Line::from("  +/-, shift+up/dn adjust the field (calendar carry)"),
-        Line::from("  Tab              expand author/committer (and offset)"),
-        Line::from("  t                switch author <-> committer (expanded)"),
-        Line::from("  s                toggle single <-> shift (cascade)"),
-        Line::from("  e / Enter        type an absolute date"),
-        Line::from("  c                copy the previous (older) commit's time"),
-        Line::from("  =                spread commits evenly in time"),
-        Line::from("  d                reset the selected commit"),
-        Line::from("  w                write changes    q/Esc  cancel"),
+        Line::from("  up/down, k/j        select commit"),
+        Line::from("  left/right, h/l     move date field"),
+        Line::from("  +/-, shift+up/dn    adjust the field (calendar carry)"),
+        Line::from("  ctrl-a / ctrl-x     adjust the field (vim-style)"),
+        Line::from("  Space               expand author/committer (and offset)"),
+        Line::from("  Tab / shift-Tab     switch author <-> committer (expanded)"),
+        Line::from("  s                   toggle single <-> shift (cascade)"),
+        Line::from("  e / Enter           type an absolute date"),
+        Line::from("  c                   copy the previous (older) commit's time"),
+        Line::from("  =                   spread commits evenly in time"),
+        Line::from("  u                   reset the selected commit"),
+        Line::from(""),
+        Line::from("  w / W               write (confirm / force)"),
+        Line::from("  q / Q, Esc          quit (confirm / force)   ctrl-c  abort"),
+        Line::from("  ? / F1              toggle this help"),
         Line::from(""),
         Line::from("  shift mode: editing a commit moves it and every newer"),
         Line::from("  commit by the same delta, keeping the gaps."),
@@ -296,5 +315,28 @@ mod tests {
         a.show_help = true;
         let content = rendered(&a);
         assert!(content.contains("git-redate keys"));
+    }
+
+    #[test]
+    fn write_confirm_prompt_shows_count() {
+        let mut a = app();
+        a.commits[0].author = parse_in_offset("2024-02-02 02:00", 0).unwrap();
+        a.mode = Mode::Confirm {
+            kind: ConfirmKind::Write,
+        };
+        let content = rendered(&a);
+        assert!(content.contains("rewrite 1 commit"));
+        assert!(content.contains("[y] yes"));
+    }
+
+    #[test]
+    fn quit_confirm_prompt_reads_discard() {
+        let mut a = app();
+        a.commits[0].author = parse_in_offset("2024-02-02 02:00", 0).unwrap();
+        a.mode = Mode::Confirm {
+            kind: ConfirmKind::Quit,
+        };
+        let content = rendered(&a);
+        assert!(content.contains("discard 1 change"));
     }
 }
