@@ -79,9 +79,12 @@ impl EditableCommit {
         match target {
             Target::Author => self.author = datetime::bump(self.author, component, steps),
             Target::Committer => self.committer = datetime::bump(self.committer, component, steps),
+            // The linked view is one date: collapse committer onto the
+            // edited author (value and offset) rather than preserving the
+            // original author/committer gap.
             Target::Both => {
                 self.author = datetime::bump(self.author, component, steps);
-                self.committer = datetime::bump(self.committer, component, steps);
+                self.committer = self.author;
             }
         }
     }
@@ -92,7 +95,7 @@ impl EditableCommit {
             Target::Committer => self.committer = stamp,
             Target::Both => {
                 self.author = stamp;
-                self.committer = stamp;
+                self.committer = self.author;
             }
         }
     }
@@ -101,9 +104,10 @@ impl EditableCommit {
         match target {
             Target::Author => self.author = datetime::add_delta(self.author, delta),
             Target::Committer => self.committer = datetime::add_delta(self.committer, delta),
+            // Collapse onto author, as `apply_bump` does (used by cascade).
             Target::Both => {
                 self.author = datetime::add_delta(self.author, delta);
-                self.committer = datetime::add_delta(self.committer, delta);
+                self.committer = self.author;
             }
         }
     }
@@ -247,6 +251,18 @@ mod tests {
         commits.iter().map(|c| datetime::format(c.author)).collect()
     }
 
+    /// An editable commit whose author and committer walls differ (the
+    /// state a rebase/amend leaves behind), both in offset 0.
+    fn gapped(author_wall: &str, committer_wall: &str) -> EditableCommit {
+        EditableCommit::new(Commit {
+            id: "gap0000".into(),
+            short_id: "gap0000".into(),
+            summary: "gapped".into(),
+            author: parse_in_offset(author_wall, 0).unwrap(),
+            committer: parse_in_offset(committer_wall, 0).unwrap(),
+        })
+    }
+
     #[test]
     fn new_mirrors_snapshot_and_is_unchanged() {
         let ec = EditableCommit::new(commit("abc", "2024-01-01 01:01"));
@@ -317,6 +333,43 @@ mod tests {
         bump(&mut cs, 0, Target::Author, Component::Hour, 2, false);
         assert_eq!(datetime::format(cs[0].author), "2024-01-01 03:00");
         assert_eq!(datetime::format(cs[0].committer), "2024-01-01 01:00");
+    }
+
+    #[test]
+    fn both_bump_collapses_author_committer_gap() {
+        // Author 01:00, committer 01:05 (a rebase-style gap). A linked
+        // +1h bump moves author and snaps committer onto it.
+        let mut cs = vec![gapped("2024-01-01 01:00", "2024-01-01 01:05")];
+        bump(&mut cs, 0, Target::Both, Component::Hour, 1, false);
+        assert_eq!(cs[0].author, cs[0].committer);
+        assert_eq!(datetime::format(cs[0].author), "2024-01-01 02:00");
+    }
+
+    #[test]
+    fn both_set_collapses_author_committer_gap() {
+        let mut cs = vec![gapped("2024-01-01 01:00", "2024-01-01 01:05")];
+        let t = parse_in_offset("2024-06-15 09:30", 0).unwrap();
+        set(&mut cs, 0, Target::Both, t, false);
+        assert_eq!(cs[0].author, cs[0].committer);
+        assert_eq!(datetime::format(cs[0].committer), "2024-06-15 09:30");
+    }
+
+    #[test]
+    fn both_shift_collapses_gap_on_cascaded_commits() {
+        // Older commit clean; newer commit carries a gap. A shift from
+        // the older one cascades the delta AND collapses the newer
+        // commit's gap (linked mode = one date per commit).
+        let mut cs = vec![
+            gapped("2024-01-01 01:00", "2024-01-01 01:00"),
+            gapped("2024-01-01 02:00", "2024-01-01 02:30"),
+        ];
+        bump(&mut cs, 0, Target::Both, Component::Hour, 1, true);
+        assert_eq!(cs[0].author, cs[0].committer);
+        assert_eq!(cs[1].author, cs[1].committer);
+        assert_eq!(datetime::format(cs[0].author), "2024-01-01 02:00");
+        // Newer author shifted +1h (02:00 -> 03:00); committer snapped on.
+        assert_eq!(datetime::format(cs[1].author), "2024-01-01 03:00");
+        assert_eq!(datetime::format(cs[1].committer), "2024-01-01 03:00");
     }
 
     #[test]
