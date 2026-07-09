@@ -1,16 +1,19 @@
 //! Key -> [`Action`] mapping.
 //!
-//! Pure and mode-aware: in text-entry mode keys feed the line buffer;
-//! otherwise they drive navigation and editing. Keeping this separate
-//! from [`crate::app`] lets the whole keymap be unit-tested without a
-//! terminal.
+//! Pure and context-aware: text entry feeds the line buffer, a
+//! confirmation prompt takes yes/no, and navigation drives editing.
+//! Keeping this separate from [`crate::app`] lets the whole keymap be
+//! unit-tested without a terminal. Bindings follow common TUI
+//! conventions (lazygit/gitui/tig/k9s/vim): `j`/`k` + arrows to move,
+//! `h`/`l` + arrows to pick a field, `+`/`-` and `Shift+arrows` (and
+//! vim `Ctrl-A`/`Ctrl-X`) to adjust, `u` to reset (not `d`, which reads
+//! as delete), `Space` to disclose, `Tab` to move between sub-fields.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A semantic action produced from a key press.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Nothing bound to this key.
     None,
     // Navigation.
     PrevRow,
@@ -36,24 +39,66 @@ pub enum Action {
     // Global.
     ToggleHelp,
     Write,
+    WriteForce,
     Quit,
+    QuitForce,
+    // Confirmation prompt.
+    ConfirmYes,
+    ConfirmNo,
 }
 
-/// Map a key to an action. `editing` selects the text-entry keymap.
-pub fn map(key: KeyEvent, editing: bool) -> Action {
-    if editing {
-        return match key.code {
-            KeyCode::Char(c) => Action::Char(c),
-            KeyCode::Backspace => Action::Backspace,
-            KeyCode::Enter => Action::CommitEdit,
-            KeyCode::Esc => Action::CancelEdit,
-            _ => Action::None,
-        };
-    }
+/// Which keymap applies, mirroring the app's mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Context {
+    Navigate,
+    Editing,
+    Confirm,
+}
 
-    // Ctrl-C always quits.
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return Action::Quit;
+fn is_ctrl(key: &KeyEvent, c: char) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(c)
+}
+
+/// Map a key to an action for the given context.
+pub fn map(key: KeyEvent, ctx: Context) -> Action {
+    // Ctrl-C is a hard abort in every context.
+    if is_ctrl(&key, 'c') {
+        return Action::QuitForce;
+    }
+    match ctx {
+        Context::Editing => map_editing(key),
+        Context::Confirm => map_confirm(key),
+        Context::Navigate => map_navigate(key),
+    }
+}
+
+fn map_editing(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char(c) => Action::Char(c),
+        KeyCode::Backspace => Action::Backspace,
+        KeyCode::Enter => Action::CommitEdit,
+        KeyCode::Esc => Action::CancelEdit,
+        _ => Action::None,
+    }
+}
+
+fn map_confirm(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmYes,
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') | KeyCode::Esc => {
+            Action::ConfirmNo
+        }
+        _ => Action::None,
+    }
+}
+
+fn map_navigate(key: KeyEvent) -> Action {
+    // vim-style numeric nudge.
+    if is_ctrl(&key, 'a') {
+        return Action::Increment;
+    }
+    if is_ctrl(&key, 'x') {
+        return Action::Decrement;
     }
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -64,18 +109,20 @@ pub fn map(key: KeyEvent, editing: bool) -> Action {
         KeyCode::Down | KeyCode::Char('j') => Action::NextRow,
         KeyCode::Left | KeyCode::Char('h') => Action::PrevComponent,
         KeyCode::Right | KeyCode::Char('l') => Action::NextComponent,
-        KeyCode::Char('+') | KeyCode::Char('K') => Action::Increment,
-        KeyCode::Char('-') | KeyCode::Char('J') => Action::Decrement,
-        KeyCode::Tab => Action::ToggleExpand,
-        KeyCode::Char('t') => Action::ToggleSubField,
+        KeyCode::Char('+') => Action::Increment,
+        KeyCode::Char('-') => Action::Decrement,
+        KeyCode::Char(' ') => Action::ToggleExpand,
+        KeyCode::Tab | KeyCode::BackTab => Action::ToggleSubField,
         KeyCode::Char('s') => Action::ToggleMode,
         KeyCode::Char('c') => Action::CopyPrevious,
         KeyCode::Char('=') => Action::Distribute,
-        KeyCode::Char('d') => Action::ResetRow,
+        KeyCode::Char('u') => Action::ResetRow,
         KeyCode::Char('e') | KeyCode::Enter => Action::BeginEdit,
-        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char('?') | KeyCode::F(1) => Action::ToggleHelp,
         KeyCode::Char('w') => Action::Write,
+        KeyCode::Char('W') => Action::WriteForce,
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
+        KeyCode::Char('Q') => Action::QuitForce,
         _ => Action::None,
     }
 }
@@ -90,60 +137,131 @@ mod tests {
     fn key_mod(code: KeyCode, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, m)
     }
+    fn nav(code: KeyCode) -> Action {
+        map(key(code), Context::Navigate)
+    }
 
     #[test]
     fn navigation_keys() {
-        assert_eq!(map(key(KeyCode::Up), false), Action::PrevRow);
-        assert_eq!(map(key(KeyCode::Char('j')), false), Action::NextRow);
-        assert_eq!(map(key(KeyCode::Left), false), Action::PrevComponent);
-        assert_eq!(map(key(KeyCode::Char('l')), false), Action::NextComponent);
+        assert_eq!(nav(KeyCode::Up), Action::PrevRow);
+        assert_eq!(nav(KeyCode::Char('j')), Action::NextRow);
+        assert_eq!(nav(KeyCode::Left), Action::PrevComponent);
+        assert_eq!(nav(KeyCode::Char('l')), Action::NextComponent);
     }
 
     #[test]
-    fn increment_variants() {
-        assert_eq!(map(key(KeyCode::Char('+')), false), Action::Increment);
-        assert_eq!(map(key(KeyCode::Char('-')), false), Action::Decrement);
+    fn adjust_variants_without_kj() {
+        assert_eq!(nav(KeyCode::Char('+')), Action::Increment);
+        assert_eq!(nav(KeyCode::Char('-')), Action::Decrement);
         assert_eq!(
-            map(key_mod(KeyCode::Up, KeyModifiers::SHIFT), false),
+            map(key_mod(KeyCode::Up, KeyModifiers::SHIFT), Context::Navigate),
             Action::Increment
         );
         assert_eq!(
-            map(key_mod(KeyCode::Down, KeyModifiers::SHIFT), false),
+            map(
+                key_mod(KeyCode::Down, KeyModifiers::SHIFT),
+                Context::Navigate
+            ),
             Action::Decrement
         );
-    }
-
-    #[test]
-    fn toggles_and_globals() {
-        assert_eq!(map(key(KeyCode::Tab), false), Action::ToggleExpand);
-        assert_eq!(map(key(KeyCode::Char('t')), false), Action::ToggleSubField);
-        assert_eq!(map(key(KeyCode::Char('s')), false), Action::ToggleMode);
-        assert_eq!(map(key(KeyCode::Char('=')), false), Action::Distribute);
-        assert_eq!(map(key(KeyCode::Char('w')), false), Action::Write);
-        assert_eq!(map(key(KeyCode::Char('q')), false), Action::Quit);
-        assert_eq!(map(key(KeyCode::Esc), false), Action::Quit);
-    }
-
-    #[test]
-    fn ctrl_c_quits() {
         assert_eq!(
-            map(key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
-            Action::Quit
+            map(
+                key_mod(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                Context::Navigate
+            ),
+            Action::Increment
+        );
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                Context::Navigate
+            ),
+            Action::Decrement
+        );
+        // K/J are no longer bound to adjust.
+        assert_ne!(nav(KeyCode::Char('K')), Action::Increment);
+        assert_ne!(nav(KeyCode::Char('J')), Action::Decrement);
+    }
+
+    #[test]
+    fn disclosure_and_subfield() {
+        assert_eq!(nav(KeyCode::Char(' ')), Action::ToggleExpand);
+        assert_eq!(nav(KeyCode::Tab), Action::ToggleSubField);
+        assert_eq!(nav(KeyCode::BackTab), Action::ToggleSubField);
+    }
+
+    #[test]
+    fn reset_is_u_not_d() {
+        assert_eq!(nav(KeyCode::Char('u')), Action::ResetRow);
+        assert_eq!(nav(KeyCode::Char('d')), Action::None); // d is unbound
+    }
+
+    #[test]
+    fn write_and_quit_split() {
+        assert_eq!(nav(KeyCode::Char('w')), Action::Write);
+        assert_eq!(nav(KeyCode::Char('W')), Action::WriteForce);
+        assert_eq!(nav(KeyCode::Char('q')), Action::Quit);
+        assert_eq!(nav(KeyCode::Char('Q')), Action::QuitForce);
+        assert_eq!(nav(KeyCode::Esc), Action::Quit);
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                Context::Navigate
+            ),
+            Action::QuitForce
         );
     }
 
     #[test]
-    fn text_mode_feeds_the_buffer() {
-        assert_eq!(map(key(KeyCode::Char('2')), true), Action::Char('2'));
-        assert_eq!(map(key(KeyCode::Backspace), true), Action::Backspace);
-        assert_eq!(map(key(KeyCode::Enter), true), Action::CommitEdit);
-        assert_eq!(map(key(KeyCode::Esc), true), Action::CancelEdit);
+    fn help_aliases() {
+        assert_eq!(nav(KeyCode::Char('?')), Action::ToggleHelp);
+        assert_eq!(nav(KeyCode::F(1)), Action::ToggleHelp);
     }
 
     #[test]
-    fn c_is_copy_only_outside_text_mode() {
-        // Plain 'c' copies; Ctrl-C quits; in text mode 'c' is a char.
-        assert_eq!(map(key(KeyCode::Char('c')), false), Action::CopyPrevious);
-        assert_eq!(map(key(KeyCode::Char('c')), true), Action::Char('c'));
+    fn editing_context_feeds_buffer() {
+        assert_eq!(
+            map(key(KeyCode::Char('2')), Context::Editing),
+            Action::Char('2')
+        );
+        assert_eq!(
+            map(key(KeyCode::Backspace), Context::Editing),
+            Action::Backspace
+        );
+        assert_eq!(
+            map(key(KeyCode::Enter), Context::Editing),
+            Action::CommitEdit
+        );
+        assert_eq!(map(key(KeyCode::Esc), Context::Editing), Action::CancelEdit);
+        // 'q' in text entry is a literal character, not quit.
+        assert_eq!(
+            map(key(KeyCode::Char('q')), Context::Editing),
+            Action::Char('q')
+        );
+    }
+
+    #[test]
+    fn confirm_context_takes_yes_no() {
+        assert_eq!(
+            map(key(KeyCode::Char('y')), Context::Confirm),
+            Action::ConfirmYes
+        );
+        assert_eq!(
+            map(key(KeyCode::Enter), Context::Confirm),
+            Action::ConfirmYes
+        );
+        assert_eq!(
+            map(key(KeyCode::Char('n')), Context::Confirm),
+            Action::ConfirmNo
+        );
+        assert_eq!(map(key(KeyCode::Esc), Context::Confirm), Action::ConfirmNo);
+        // Ctrl-C still hard-aborts from a prompt.
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                Context::Confirm
+            ),
+            Action::QuitForce
+        );
     }
 }

@@ -93,6 +93,14 @@ impl App {
         matches!(self.mode, Mode::Editing { .. })
     }
 
+    /// The input keymap that applies to the current mode.
+    pub fn context(&self) -> crate::input::Context {
+        match self.mode {
+            Mode::Editing { .. } => crate::input::Context::Editing,
+            Mode::Navigate => crate::input::Context::Navigate,
+        }
+    }
+
     fn expanded(&self) -> bool {
         self.commits.get(self.selected).is_some_and(|c| c.expanded)
     }

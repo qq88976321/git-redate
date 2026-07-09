@@ -90,7 +90,7 @@ fn run_tui(app: &mut App) -> Result<()> {
     while !app.quit {
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Release {
-                let action = input::map(key, app.is_editing());
+                let action = input::map(key, app.context());
                 app.handle(action);
             }
         }
