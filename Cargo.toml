@@ -28,7 +28,15 @@ unimplemented = "warn"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-gix = "0.85"
+# Minimal feature set: object read/write, refs, and config are core;
+# `sha1` is the hash backend, `revision` powers rev-parse, and `status`
+# backs the dirty-worktree notice. The heavy defaults (blame, mailmap,
+# worktree-mutation, max-performance/zlib-ng) are dropped.
+gix = { version = "0.85", default-features = false, features = [
+    "sha1",
+    "revision",
+    "status",
+] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 ratatui = "0.30"
 thiserror = "2"
