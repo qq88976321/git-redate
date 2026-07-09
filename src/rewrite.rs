@@ -12,7 +12,9 @@ use crate::datetime::Stamp;
 use crate::error::RedateError;
 use crate::model::EditableCommit;
 use crate::repo::RefTarget;
+use crate::sign::Signer;
 use gix::bstr::ByteSlice;
+use gix::objs::WriteTo;
 use gix::ObjectId;
 use std::collections::HashMap;
 
@@ -25,21 +27,25 @@ pub struct RewriteReport {
     pub new_tip: ObjectId,
     /// Number of commits rewritten.
     pub count: usize,
-    /// Commits whose GPG signature was dropped.
+    /// Commits that were re-signed.
+    pub resigned: usize,
+    /// Commits whose signature was dropped (`--no-sign`).
     pub dropped_signatures: usize,
 }
 
 /// Rewrite the edited commits and move the current branch/HEAD to the
-/// new tip, writing a reflog entry. A no-op (nothing changed) leaves
-/// the ref untouched. Not called for `--dry-run` (which writes nothing;
-/// main prints the planned changes from the model instead).
+/// new tip, writing a reflog entry. Originally-signed commits are
+/// re-signed with `signer` (or dropped when `signer` is `None`, i.e.
+/// `--no-sign`). A no-op (nothing changed) leaves the ref untouched.
+/// Not called for `--dry-run` (which writes nothing).
 pub fn apply(
     repo: &gix::Repository,
     commits: &[EditableCommit],
     old_tip: ObjectId,
     ref_target: &RefTarget,
+    signer: Option<&Signer>,
 ) -> Result<RewriteReport, RedateError> {
-    let rewritten = write_rewritten(repo, commits)?;
+    let rewritten = write_rewritten(repo, commits, signer)?;
     if rewritten.count > 0 {
         move_ref(
             repo,
@@ -53,6 +59,7 @@ pub fn apply(
         old_tip,
         new_tip: rewritten.new_tip,
         count: rewritten.count,
+        resigned: rewritten.resigned,
         dropped_signatures: rewritten.dropped_signatures,
     })
 }
@@ -98,18 +105,23 @@ pub struct Rewritten {
     pub new_tip: ObjectId,
     /// Number of commits actually rebuilt.
     pub count: usize,
-    /// How many rebuilt commits had a GPG signature dropped.
+    /// How many rebuilt commits were re-signed.
+    pub resigned: usize,
+    /// How many rebuilt commits had their signature dropped.
     pub dropped_signatures: usize,
     /// old oid -> new oid, for the rebuilt commits.
     pub map: HashMap<ObjectId, ObjectId>,
 }
 
 /// Rebuild and write the edited commits (oldest-first), returning the
-/// new tip and the old->new id map. Writes objects to the odb but does
-/// not move any ref (see [`crate::rewrite::apply`]).
+/// new tip and the old->new id map. Originally-signed commits are
+/// re-signed with `signer`, or have their signature dropped when
+/// `signer` is `None`. Writes objects to the odb but does not move any
+/// ref (see [`crate::rewrite::apply`]).
 pub fn write_rewritten(
     repo: &gix::Repository,
     commits: &[EditableCommit],
+    signer: Option<&Signer>,
 ) -> Result<Rewritten, RedateError> {
     let tip_oid = parse_oid(&commits.last().ok_or(RedateError::EmptyRange)?.original.id)?;
 
@@ -118,12 +130,14 @@ pub fn write_rewritten(
         return Ok(Rewritten {
             new_tip: tip_oid,
             count: 0,
+            resigned: 0,
             dropped_signatures: 0,
             map: HashMap::new(),
         });
     };
 
     let mut map: HashMap<ObjectId, ObjectId> = HashMap::new();
+    let mut resigned = 0;
     let mut dropped = 0;
     let mut new_tip = tip_oid;
 
@@ -138,7 +152,8 @@ pub fn write_rewritten(
         let author = signature(orig.author().map_err(write_err)?, ec.author);
         let committer = signature(orig.committer().map_err(write_err)?, ec.committer);
 
-        // Preserve extra headers except the now-invalid GPG signature.
+        // Carry over extra headers except the now-invalid signature; it
+        // is re-created below (or dropped under --no-sign).
         let mut extra = Vec::new();
         let mut had_sig = false;
         for &(k, ref v) in &decoded.extra_headers {
@@ -148,11 +163,8 @@ pub fn write_rewritten(
             }
             extra.push((k.to_owned(), v.clone().into_owned()));
         }
-        if had_sig {
-            dropped += 1;
-        }
 
-        let commit = gix::objs::Commit {
+        let mut commit = gix::objs::Commit {
             tree: orig.tree_id().map_err(write_err)?.detach(),
             parents: parents.into_iter().collect(),
             author,
@@ -162,6 +174,28 @@ pub fn write_rewritten(
             extra_headers: extra,
         };
 
+        if had_sig {
+            match signer {
+                Some(s) => {
+                    // Sign the payload as serialized WITHOUT gpgsig
+                    // (exactly what git signs), then store the armored
+                    // result as the gpgsig header (appended last).
+                    let mut payload = Vec::with_capacity(commit.size() as usize);
+                    commit
+                        .write_to(&mut payload)
+                        .map_err(|e| RedateError::Write(e.to_string()))?;
+                    let armored = s
+                        .sign(&payload)
+                        .map_err(|e| RedateError::Signing(e.to_string()))?;
+                    commit
+                        .extra_headers
+                        .push((b"gpgsig".as_bstr().to_owned(), armored.into()));
+                    resigned += 1;
+                }
+                None => dropped += 1,
+            }
+        }
+
         let new_oid = repo.write_object(&commit).map_err(write_err)?.detach();
         map.insert(old_oid, new_oid);
         new_tip = new_oid;
@@ -170,6 +204,7 @@ pub fn write_rewritten(
     Ok(Rewritten {
         new_tip,
         count: commits.len() - first,
+        resigned,
         dropped_signatures: dropped,
         map,
     })
@@ -323,7 +358,7 @@ mod tests {
         let s = scratch();
         let commits = three_commits(&s.repo);
         let tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
-        let out = write_rewritten(&s.repo, &commits).unwrap();
+        let out = write_rewritten(&s.repo, &commits, None).unwrap();
         assert_eq!(out.count, 0);
         assert_eq!(out.new_tip, tip);
     }
@@ -336,7 +371,7 @@ mod tests {
         let new_time = datetime::parse_in_offset("2024-01-01 05:00", 0).unwrap();
         crate::model::set(&mut commits, 1, crate::model::Target::Both, new_time, false);
 
-        let out = write_rewritten(&s.repo, &commits).unwrap();
+        let out = write_rewritten(&s.repo, &commits, None).unwrap();
         // Commits 1 and 2 are rebuilt (2's parent changed); 0 is not.
         assert_eq!(out.count, 2);
         assert!(!out
@@ -381,7 +416,7 @@ mod tests {
             1,
             true,
         );
-        let out = write_rewritten(&s.repo, &commits).unwrap();
+        let out = write_rewritten(&s.repo, &commits, None).unwrap();
         assert_eq!(out.count, 3);
 
         // Each rewritten commit is one hour later than the original.
@@ -434,7 +469,7 @@ mod tests {
             true,
         );
         let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name)).unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name), None).unwrap();
 
         assert_eq!(report.count, 3);
         assert_eq!(report.old_tip, old_tip);
@@ -458,7 +493,7 @@ mod tests {
 
         let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
         crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Detached).unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Detached, None).unwrap();
 
         assert_eq!(report.count, 1);
         let head_id = s.repo.head_id().unwrap().detach();
@@ -472,7 +507,7 @@ mod tests {
         let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
         set_ref(&s.repo, "refs/heads/main", old_tip);
         let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name)).unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name), None).unwrap();
         assert_eq!(report.count, 0);
         assert_eq!(report.new_tip, old_tip);
         let branch_tip = s
@@ -482,5 +517,127 @@ mod tests {
             .id()
             .detach();
         assert_eq!(branch_tip, old_tip);
+    }
+
+    // ---- re-signing ----
+
+    fn ephemeral_ssh_signer(keydir: &std::path::Path) -> Option<Signer> {
+        use std::process::{Command, Stdio};
+        std::fs::create_dir_all(keydir).ok()?;
+        let key = keydir.join("id");
+        let status = Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-C", "redate@test", "-f"])
+            .arg(&key)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        if !status.success() {
+            return None;
+        }
+        Some(Signer {
+            format: crate::sign::SignFormat::Ssh,
+            key: key.to_string_lossy().into_owned(),
+            program: "ssh-keygen".into(),
+        })
+    }
+
+    fn write_signed_commit(
+        repo: &gix::Repository,
+        signer: &Signer,
+        tree: ObjectId,
+        secs: i64,
+    ) -> ObjectId {
+        let sig = gix::actor::Signature {
+            name: "Tester".into(),
+            email: "test@example.com".into(),
+            time: gix::date::Time::new(secs, 0),
+        };
+        let mut commit = gix::objs::Commit {
+            tree,
+            parents: Vec::new().into_iter().collect(),
+            author: sig.clone(),
+            committer: sig,
+            encoding: None,
+            message: "signed".into(),
+            extra_headers: Vec::new(),
+        };
+        let mut payload = Vec::new();
+        commit.write_to(&mut payload).unwrap();
+        let armored = signer.sign(&payload).unwrap();
+        commit
+            .extra_headers
+            .push((b"gpgsig".as_bstr().to_owned(), armored.into()));
+        repo.write_object(&commit).unwrap().detach()
+    }
+
+    fn has_gpgsig(repo: &gix::Repository, oid: ObjectId) -> Option<Vec<u8>> {
+        let c = repo.find_commit(oid).unwrap();
+        let decoded = c.decode().unwrap();
+        decoded
+            .extra_headers
+            .iter()
+            .find(|(k, _)| *k == b"gpgsig".as_bstr())
+            .map(|(_, v)| v.to_vec())
+    }
+
+    fn editable_from(oid: ObjectId, secs: i64) -> EditableCommit {
+        let stamp = Stamp::new(secs, 0);
+        EditableCommit::new(crate::model::Commit {
+            id: oid.to_string(),
+            short_id: oid.to_string()[..7].to_string(),
+            summary: "signed".into(),
+            author: stamp,
+            committer: stamp,
+        })
+    }
+
+    #[test]
+    fn resign_keeps_a_valid_signature_and_no_sign_drops_it() {
+        let s = scratch();
+        let Some(signer) = ephemeral_ssh_signer(&s.dir.join("keys")) else {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        };
+        let tree = empty_tree(&s.repo);
+        let base = datetime::parse_in_offset("2024-01-01 01:00", 0)
+            .unwrap()
+            .seconds;
+        let oid = write_signed_commit(&s.repo, &signer, tree, base);
+        assert!(
+            has_gpgsig(&s.repo, oid).is_some(),
+            "fixture should be signed"
+        );
+
+        // Re-sign: edit the date, rewrite with the signer.
+        let mut commits = vec![editable_from(oid, base)];
+        crate::model::bump(
+            &mut commits,
+            0,
+            crate::model::Target::Both,
+            datetime::Component::Hour,
+            1,
+            false,
+        );
+        let out = write_rewritten(&s.repo, &commits, Some(&signer)).unwrap();
+        assert_eq!(out.resigned, 1);
+        assert_eq!(out.dropped_signatures, 0);
+        let sig = has_gpgsig(&s.repo, out.new_tip).expect("re-signed commit keeps a gpgsig");
+        assert!(sig.starts_with(b"-----BEGIN SSH SIGNATURE-----"));
+
+        // --no-sign: same edit, signature dropped.
+        let mut commits2 = vec![editable_from(oid, base)];
+        crate::model::bump(
+            &mut commits2,
+            0,
+            crate::model::Target::Both,
+            datetime::Component::Hour,
+            1,
+            false,
+        );
+        let out2 = write_rewritten(&s.repo, &commits2, None).unwrap();
+        assert_eq!(out2.dropped_signatures, 1);
+        assert_eq!(out2.resigned, 0);
+        assert!(has_gpgsig(&s.repo, out2.new_tip).is_none());
     }
 }

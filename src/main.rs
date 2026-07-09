@@ -70,11 +70,20 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Re-sign originally-signed commits with the repo's signing config,
+    // unless --no-sign asks to drop signatures. Signing runs after the
+    // terminal is restored, so gpg/ssh pinentry can prompt.
+    let signer = if cli.no_sign {
+        None
+    } else {
+        Some(repo::signing_config(&repository))
+    };
     let report = rewrite::apply(
         &repository,
         &app.commits,
         loaded.old_tip,
         &loaded.ref_target,
+        signer.as_ref(),
     )
     .context("rewriting history")?;
     print_report(&report);
@@ -133,9 +142,12 @@ fn print_report(report: &RewriteReport) {
     println!("  old tip: {}", report.old_tip);
     println!("  new tip: {}", report.new_tip);
     println!("  undo with: git reset --hard {}", report.old_tip);
+    if report.resigned > 0 {
+        println!("  re-signed {} commit(s)", report.resigned);
+    }
     if report.dropped_signatures > 0 {
         println!(
-            "  note: dropped {} GPG signature(s) invalidated by the date change",
+            "  note: dropped {} signature(s) invalidated by the date change",
             report.dropped_signatures
         );
     }

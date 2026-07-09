@@ -51,6 +51,10 @@ pub enum RedateError {
     /// Writing objects or moving the ref failed.
     #[error("failed to rewrite history: {0}")]
     Write(String),
+
+    /// Re-signing a rewritten commit failed.
+    #[error("could not re-sign commit: {0}")]
+    Signing(String),
 }
 
 #[cfg(test)]
