@@ -22,6 +22,7 @@ pub enum SubField {
 pub enum ConfirmKind {
     Write,
     Quit,
+    ResetAll,
 }
 
 /// Top-level interaction mode.
@@ -202,6 +203,7 @@ impl App {
                 self.message = Some("distributed evenly".to_string());
             }
             Action::ResetRow => model::reset(&mut self.commits, self.selected),
+            Action::ResetAll => self.request_reset_all(),
             Action::BeginEdit => self.begin_edit(),
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::Write => self.request_write(false),
@@ -236,6 +238,18 @@ impl App {
         }
     }
 
+    /// `U` resets every commit; prompt first, since it discards all edits.
+    /// A no-op (nothing changed) just reports so.
+    fn request_reset_all(&mut self) {
+        if model::any_changed(&self.commits) {
+            self.mode = Mode::Confirm {
+                kind: ConfirmKind::ResetAll,
+            };
+        } else {
+            self.message = Some("nothing to reset".to_string());
+        }
+    }
+
     fn handle_confirm(&mut self, action: Action) {
         let kind = match &self.mode {
             Mode::Confirm { kind } => *kind,
@@ -248,6 +262,11 @@ impl App {
                     self.quit = true;
                 }
                 ConfirmKind::Quit => self.quit = true,
+                ConfirmKind::ResetAll => {
+                    model::reset_all(&mut self.commits);
+                    self.mode = Mode::Navigate;
+                    self.message = Some("reset all".to_string());
+                }
             },
             Action::ConfirmNo => self.mode = Mode::Navigate,
             _ => {}
@@ -534,6 +553,41 @@ mod tests {
         assert!(a.is_editing());
         a.handle(Action::QuitForce);
         assert!(a.quit && !a.write_requested);
+    }
+
+    #[test]
+    fn reset_all_prompts_then_restores_every_commit() {
+        let mut a = edited(EditMode::Single);
+        // A second dirty row, to prove the whole list is reset.
+        a.selected = 1;
+        a.handle(Action::Increment);
+        assert!(crate::model::any_changed(&a.commits));
+
+        a.handle(Action::ResetAll);
+        assert!(matches!(
+            a.mode,
+            Mode::Confirm {
+                kind: ConfirmKind::ResetAll
+            }
+        ));
+        a.handle(Action::ConfirmYes);
+        assert_eq!(a.mode, Mode::Navigate);
+        assert!(a.commits.iter().all(|c| !c.changed()));
+    }
+
+    #[test]
+    fn reset_all_can_be_cancelled_and_is_noop_when_clean() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::ResetAll);
+        a.handle(Action::ConfirmNo);
+        assert_eq!(a.mode, Mode::Navigate);
+        assert!(crate::model::any_changed(&a.commits)); // edits kept
+
+        // Nothing changed -> no prompt, just a message.
+        let mut b = app(&["2024-01-01 01:00"], EditMode::Single);
+        b.handle(Action::ResetAll);
+        assert_eq!(b.mode, Mode::Navigate);
+        assert!(b.message.is_some());
     }
 
     #[test]

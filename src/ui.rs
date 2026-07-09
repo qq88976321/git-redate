@@ -125,6 +125,10 @@ fn status(app: &App) -> Paragraph<'static> {
                     format!("discard {n} change(s) and quit?"),
                     Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
                 ),
+                ConfirmKind::ResetAll => (
+                    format!("discard {n} change(s) and reset all?"),
+                    Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+                ),
             };
             Line::from(vec![
                 Span::styled(prompt, style),
@@ -168,6 +172,7 @@ fn help_widget() -> Paragraph<'static> {
         entry("c", "copy the previous (older) commit's time"),
         entry("=", "spread commits evenly in time"),
         entry("u", "reset the selected commit"),
+        entry("U", "reset all commits"),
         Line::from(""),
         entry("w / W", "write (confirm / force)"),
         entry("q / Q, Esc", "quit (confirm / force)   ctrl-c  abort"),
@@ -425,6 +430,17 @@ mod tests {
         };
         let content = rendered(&a);
         assert!(content.contains("discard 1 change"));
+    }
+
+    #[test]
+    fn reset_all_confirm_prompt_reads_reset_all() {
+        let mut a = app();
+        a.commits[0].author = parse_in_offset("2024-02-02 02:00", 0).unwrap();
+        a.mode = Mode::Confirm {
+            kind: ConfirmKind::ResetAll,
+        };
+        let content = rendered(&a);
+        assert!(content.contains("reset all?"));
     }
 
     #[test]

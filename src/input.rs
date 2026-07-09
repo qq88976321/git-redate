@@ -30,6 +30,7 @@ pub enum Action {
     CopyPrevious,
     Distribute,
     ResetRow,
+    ResetAll,
     // Text entry.
     BeginEdit,
     Char(char),
@@ -117,6 +118,7 @@ fn map_navigate(key: KeyEvent) -> Action {
         KeyCode::Char('c') => Action::CopyPrevious,
         KeyCode::Char('=') => Action::Distribute,
         KeyCode::Char('u') => Action::ResetRow,
+        KeyCode::Char('U') => Action::ResetAll,
         KeyCode::Char('e') | KeyCode::Enter => Action::BeginEdit,
         KeyCode::Char('?') | KeyCode::F(1) => Action::ToggleHelp,
         KeyCode::Char('w') => Action::Write,
@@ -194,6 +196,11 @@ mod tests {
     fn reset_is_u_not_d() {
         assert_eq!(nav(KeyCode::Char('u')), Action::ResetRow);
         assert_eq!(nav(KeyCode::Char('d')), Action::None); // d is unbound
+    }
+
+    #[test]
+    fn reset_all_is_capital_u() {
+        assert_eq!(nav(KeyCode::Char('U')), Action::ResetAll);
     }
 
     #[test]
