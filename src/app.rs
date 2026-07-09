@@ -8,6 +8,7 @@
 use crate::cli::EditMode;
 use crate::datetime::{self, Component, Stamp};
 use crate::input::Action;
+use crate::lineedit::LineEditor;
 use crate::model::{self, EditableCommit, Target};
 
 /// Which of a commit's two timestamps is focused (when expanded).
@@ -36,6 +37,10 @@ pub enum Mode {
     /// Awaiting y/N for a write or a discard-and-quit.
     Confirm {
         kind: ConfirmKind,
+    },
+    /// Typing an incremental search query that jumps the selection.
+    Search {
+        editor: LineEditor,
     },
 }
 
@@ -85,6 +90,10 @@ pub struct App {
     /// Undo/redo history of timestamp edits (most recent on top).
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    /// Last committed search query, replayed by `n`/`N`.
+    search_query: Option<String>,
+    /// Selection when the current search started, restored on cancel.
+    search_origin: usize,
 }
 
 impl App {
@@ -109,6 +118,8 @@ impl App {
             write_requested: false,
             undo: Vec::new(),
             redo: Vec::new(),
+            search_query: None,
+            search_origin: 0,
         };
         if separate {
             for c in &mut app.commits {
@@ -127,6 +138,7 @@ impl App {
         match self.mode {
             Mode::Editing { .. } => crate::input::Context::Editing,
             Mode::Confirm { .. } => crate::input::Context::Confirm,
+            Mode::Search { .. } => crate::input::Context::Search,
             Mode::Navigate => crate::input::Context::Navigate,
         }
     }
@@ -244,6 +256,7 @@ impl App {
         match self.mode {
             Mode::Editing { .. } => self.handle_editing(action),
             Mode::Confirm { .. } => self.handle_confirm(action),
+            Mode::Search { .. } => self.handle_search(action),
             Mode::Navigate => self.handle_navigate(action),
         }
     }
@@ -295,6 +308,14 @@ impl App {
             Action::ResetAll => self.request_reset_all(),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
+            Action::BeginSearch => {
+                self.search_origin = self.selected;
+                self.mode = Mode::Search {
+                    editor: LineEditor::default(),
+                };
+            }
+            Action::NextMatch => self.jump_match(1),
+            Action::PrevMatch => self.jump_match(-1),
             Action::BeginEdit => self.begin_edit(),
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::Write => self.request_write(false),
@@ -363,6 +384,72 @@ impl App {
             },
             Action::ConfirmNo => self.mode = Mode::Navigate,
             _ => {}
+        }
+    }
+
+    fn handle_search(&mut self, action: Action) {
+        match action {
+            Action::Line(op) => {
+                // Apply the edit, then re-run the search from the origin
+                // only when the text actually changed (not on cursor moves).
+                let query = if let Mode::Search { editor } = &mut self.mode {
+                    editor.apply(op);
+                    op.mutates().then(|| editor.text().to_string())
+                } else {
+                    None
+                };
+                if let Some(q) = query {
+                    self.selected = self
+                        .match_index(self.search_origin, 1, &q)
+                        .unwrap_or(self.search_origin);
+                }
+            }
+            Action::CommitSearch => {
+                if let Mode::Search { editor } = &self.mode {
+                    let q = editor.text().to_string();
+                    self.search_query = (!q.is_empty()).then_some(q);
+                }
+                self.mode = Mode::Navigate;
+            }
+            Action::CancelSearch => {
+                self.selected = self.search_origin.min(self.commits.len().saturating_sub(1));
+                self.mode = Mode::Navigate;
+            }
+            _ => {}
+        }
+    }
+
+    /// Index of the next commit matching `q` (case-insensitive substring
+    /// of the summary or short id), scanning from `start` in direction
+    /// `dir` (+1/-1) and wrapping. `None` if nothing matches.
+    fn match_index(&self, start: usize, dir: isize, q: &str) -> Option<usize> {
+        let n = self.commits.len();
+        if n == 0 || q.is_empty() {
+            return None;
+        }
+        let needle = q.to_lowercase();
+        (0..n).find_map(|step| {
+            let idx = (start as isize + dir * step as isize).rem_euclid(n as isize) as usize;
+            let c = &self.commits[idx].original;
+            let hit = c.summary.to_lowercase().contains(&needle)
+                || c.short_id.to_lowercase().contains(&needle);
+            hit.then_some(idx)
+        })
+    }
+
+    /// `n`/`N`: jump to the next/previous match of the committed query,
+    /// starting one commit past the current selection so it advances.
+    fn jump_match(&mut self, dir: isize) {
+        let Some(q) = self.search_query.clone() else {
+            self.message = Some("no active search (press / to search)".to_string());
+            return;
+        };
+        let n = self.commits.len();
+        let start = (self.selected as isize + dir).rem_euclid(n as isize) as usize;
+        if let Some(i) = self.match_index(start, dir, &q) {
+            self.selected = i;
+        } else {
+            self.message = Some(format!("no match for \"{q}\""));
         }
     }
 
@@ -451,6 +538,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::datetime::parse_in_offset;
+    use crate::lineedit::LineOp;
     use crate::model::Commit;
 
     fn app(walls: &[&str], mode: EditMode) -> App {
@@ -726,6 +814,66 @@ mod tests {
         a.handle(Action::CopyPrevious); // selected == 0 -> no-op
         a.handle(Action::Undo);
         assert_eq!(a.message.as_deref(), Some("nothing to undo"));
+    }
+
+    fn typed_search(a: &mut App, query: &str) {
+        a.handle(Action::BeginSearch);
+        for c in query.chars() {
+            a.handle(Action::Line(LineOp::Insert(c)));
+        }
+    }
+
+    #[test]
+    fn search_jumps_to_the_match_and_cancel_restores_origin() {
+        let mut a = app(
+            &["2024-01-01 01:00", "2024-01-01 02:00", "2024-01-01 03:00"],
+            EditMode::Single,
+        );
+        // Summaries are c0, c1, c2; from row 0, "c2" jumps to row 2.
+        typed_search(&mut a, "c2");
+        assert_eq!(a.selected, 2);
+        a.handle(Action::CancelSearch);
+        assert_eq!(a.selected, 0); // origin restored
+        assert_eq!(a.mode, Mode::Navigate);
+        assert!(a.search_query.is_none());
+        // The commit list itself is never touched by searching.
+        assert!(!crate::model::any_changed(&a.commits));
+    }
+
+    #[test]
+    fn committed_search_cycles_with_n_and_shift_n() {
+        let mut a = app(
+            &[
+                "2024-01-01 01:00",
+                "2024-01-01 02:00",
+                "2024-01-01 03:00",
+                "2024-01-01 04:00",
+            ],
+            EditMode::Single,
+        );
+        typed_search(&mut a, "c"); // matches every commit
+        a.handle(Action::CommitSearch);
+        assert_eq!(a.search_query.as_deref(), Some("c"));
+        let start = a.selected;
+        a.handle(Action::NextMatch);
+        assert_eq!(a.selected, (start + 1) % 4);
+        a.handle(Action::PrevMatch);
+        assert_eq!(a.selected, start);
+    }
+
+    #[test]
+    fn search_matches_short_id_too() {
+        let mut a = app(&["2024-01-01 01:00", "2024-01-01 02:00"], EditMode::Single);
+        // short_id is formatted as 7 digits: "0000000", "0000001".
+        typed_search(&mut a, "0000001");
+        assert_eq!(a.selected, 1);
+    }
+
+    #[test]
+    fn next_match_without_a_search_reports() {
+        let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
+        a.handle(Action::NextMatch);
+        assert!(a.message.is_some());
     }
 
     #[test]

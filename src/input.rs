@@ -9,6 +9,7 @@
 //! vim `Ctrl-A`/`Ctrl-X`) to adjust, `u` to reset (not `d`, which reads
 //! as delete), `Space` to disclose, `Tab` to move between sub-fields.
 
+use crate::lineedit::LineOp;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A semantic action produced from a key press.
@@ -37,6 +38,13 @@ pub enum Action {
     Backspace,
     CommitEdit,
     CancelEdit,
+    // Search (incremental jump).
+    BeginSearch,
+    Line(LineOp),
+    CommitSearch,
+    CancelSearch,
+    NextMatch,
+    PrevMatch,
     // Global.
     Undo,
     Redo,
@@ -56,6 +64,7 @@ pub enum Context {
     Navigate,
     Editing,
     Confirm,
+    Search,
 }
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -71,6 +80,7 @@ pub fn map(key: KeyEvent, ctx: Context) -> Action {
     match ctx {
         Context::Editing => map_editing(key),
         Context::Confirm => map_confirm(key),
+        Context::Search => map_search(key),
         Context::Navigate => map_navigate(key),
     }
 }
@@ -91,6 +101,38 @@ fn map_confirm(key: KeyEvent) -> Action {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('q') | KeyCode::Esc => {
             Action::ConfirmNo
         }
+        _ => Action::None,
+    }
+}
+
+/// The search prompt: a readline-style line editor plus commit/cancel.
+/// (Ctrl-C is caught by `map` before this, so it still hard-aborts.)
+fn map_search(key: KeyEvent) -> Action {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let line = |op| Action::Line(op);
+    match key.code {
+        KeyCode::Enter => Action::CommitSearch,
+        KeyCode::Esc => Action::CancelSearch,
+        KeyCode::Backspace => line(LineOp::Backspace),
+        KeyCode::Delete => line(LineOp::Delete),
+        KeyCode::Home => line(LineOp::Home),
+        KeyCode::End => line(LineOp::End),
+        KeyCode::Left if ctrl => line(LineOp::WordLeft),
+        KeyCode::Right if ctrl => line(LineOp::WordRight),
+        KeyCode::Left => line(LineOp::Left),
+        KeyCode::Right => line(LineOp::Right),
+        // Emacs/readline control keys for editing the query.
+        KeyCode::Char(c) if ctrl => match c {
+            'a' => line(LineOp::Home),
+            'e' => line(LineOp::End),
+            'b' => line(LineOp::Left),
+            'f' => line(LineOp::Right),
+            'w' => line(LineOp::KillWordBack),
+            'u' => line(LineOp::KillToStart),
+            'k' => line(LineOp::KillToEnd),
+            _ => Action::None,
+        },
+        KeyCode::Char(c) => line(LineOp::Insert(c)),
         _ => Action::None,
     }
 }
@@ -127,6 +169,9 @@ fn map_navigate(key: KeyEvent) -> Action {
         KeyCode::Char('=') => Action::Distribute,
         KeyCode::Char('u') => Action::ResetRow,
         KeyCode::Char('U') => Action::ResetAll,
+        KeyCode::Char('/') => Action::BeginSearch,
+        KeyCode::Char('n') => Action::NextMatch,
+        KeyCode::Char('N') => Action::PrevMatch,
         KeyCode::Char('e') | KeyCode::Enter => Action::BeginEdit,
         KeyCode::Char('?') | KeyCode::F(1) => Action::ToggleHelp,
         KeyCode::Char('w') => Action::Write,
@@ -270,6 +315,63 @@ mod tests {
         assert_eq!(
             map(key(KeyCode::Char('q')), Context::Editing),
             Action::Char('q')
+        );
+    }
+
+    #[test]
+    fn navigate_search_bindings() {
+        assert_eq!(nav(KeyCode::Char('/')), Action::BeginSearch);
+        assert_eq!(nav(KeyCode::Char('n')), Action::NextMatch);
+        assert_eq!(nav(KeyCode::Char('N')), Action::PrevMatch);
+    }
+
+    #[test]
+    fn search_context_edits_and_commits() {
+        let s = |code| map(key(code), Context::Search);
+        assert_eq!(s(KeyCode::Char('a')), Action::Line(LineOp::Insert('a')));
+        assert_eq!(s(KeyCode::Backspace), Action::Line(LineOp::Backspace));
+        assert_eq!(s(KeyCode::Delete), Action::Line(LineOp::Delete));
+        assert_eq!(s(KeyCode::Left), Action::Line(LineOp::Left));
+        assert_eq!(s(KeyCode::Home), Action::Line(LineOp::Home));
+        assert_eq!(s(KeyCode::End), Action::Line(LineOp::End));
+        assert_eq!(s(KeyCode::Enter), Action::CommitSearch);
+        assert_eq!(s(KeyCode::Esc), Action::CancelSearch);
+    }
+
+    #[test]
+    fn search_context_readline_control_keys() {
+        let ctrl = |c| {
+            map(
+                key_mod(KeyCode::Char(c), KeyModifiers::CONTROL),
+                Context::Search,
+            )
+        };
+        assert_eq!(ctrl('u'), Action::Line(LineOp::KillToStart));
+        assert_eq!(ctrl('w'), Action::Line(LineOp::KillWordBack));
+        assert_eq!(ctrl('k'), Action::Line(LineOp::KillToEnd));
+        assert_eq!(ctrl('a'), Action::Line(LineOp::Home));
+        assert_eq!(ctrl('e'), Action::Line(LineOp::End));
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Left, KeyModifiers::CONTROL),
+                Context::Search
+            ),
+            Action::Line(LineOp::WordLeft)
+        );
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Right, KeyModifiers::CONTROL),
+                Context::Search
+            ),
+            Action::Line(LineOp::WordRight)
+        );
+        // Ctrl-C still hard-aborts, even from the search prompt.
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                Context::Search
+            ),
+            Action::QuitForce
         );
     }
 

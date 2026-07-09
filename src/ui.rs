@@ -103,6 +103,20 @@ const HINTS: &str = "[up/down] row  [left/right] field  [+/-] adjust  [Space] ex
      [Tab] author/committer  [s] mode  [e] type  [c] copy-prev  [=] spread  [u] reset  \
      [?] help  [w] write  [q] quit";
 
+/// Split `text` at byte cursor `cur` into (before, cursor-char, after);
+/// the middle is the char under the cursor (a space past the end) so it
+/// can be drawn reversed as a block cursor.
+fn cursor_split(text: &str, cur: usize) -> (&str, String, &str) {
+    let before = &text[..cur];
+    if cur < text.len() {
+        let ch = text[cur..].chars().next().unwrap();
+        let end = cur + ch.len_utf8();
+        (before, text[cur..end].to_string(), &text[end..])
+    } else {
+        (before, " ".to_string(), "")
+    }
+}
+
 fn status(app: &App) -> Paragraph<'static> {
     let dim = Style::default().fg(DIM);
     let line = match &app.mode {
@@ -135,6 +149,17 @@ fn status(app: &App) -> Paragraph<'static> {
                 Span::styled("   [y] yes    [n/Esc] no", dim),
             ])
         }
+        Mode::Search { editor } => {
+            let (before, at, after) = cursor_split(editor.text(), editor.cursor());
+            let bold = Style::default().add_modifier(Modifier::BOLD);
+            Line::from(vec![
+                Span::styled("search: ", Style::default().fg(INPUT)),
+                Span::styled(before.to_string(), bold),
+                Span::styled(at, bold.add_modifier(Modifier::REVERSED)),
+                Span::styled(after.to_string(), bold),
+                Span::styled("    [Enter] jump  [Esc] cancel   n/N next/prev", dim),
+            ])
+        }
         Mode::Navigate => match &app.message {
             Some(msg) => Line::from(Span::styled(msg.clone(), Style::default().fg(INFO))),
             None => Line::from(Span::styled(HINTS, dim)),
@@ -163,6 +188,7 @@ fn help_widget() -> Paragraph<'static> {
         Line::from(""),
         entry("up/down, k/j", "select commit"),
         entry("left/right, h/l", "move date field"),
+        entry("/, n / N", "search commits; next / prev match"),
         entry("+/-, shift+up/dn", "adjust the field (calendar carry)"),
         entry("ctrl-a / ctrl-x", "adjust the field (vim-style)"),
         entry("Space", "expand author/committer (and offset)"),
@@ -431,6 +457,19 @@ mod tests {
         };
         let content = rendered(&a);
         assert!(content.contains("discard 1 change"));
+    }
+
+    #[test]
+    fn search_prompt_shows_the_query() {
+        let mut a = app();
+        let mut editor = crate::lineedit::LineEditor::default();
+        for c in "fix".chars() {
+            editor.apply(crate::lineedit::LineOp::Insert(c));
+        }
+        a.mode = Mode::Search { editor };
+        let content = rendered(&a);
+        assert!(content.contains("search:"));
+        assert!(content.contains("fix"));
     }
 
     #[test]
