@@ -12,6 +12,12 @@ default:
 build:
     cargo build
 
+# Install the `git-redate` binary to ~/.cargo/bin (already on PATH);
+# with it on PATH, git runs `git redate ...` as a subcommand. Remove
+# with `cargo uninstall git-redate`.
+install:
+    cargo install --path .
+
 # Run unit tests.
 test:
     cargo test
