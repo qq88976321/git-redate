@@ -1,7 +1,7 @@
 # Usage
 
 ```
-git redate [<revspec>] [-n <N>] [--root] [--dry-run] [--separate] [--mode <single|shift>]
+git redate [<revspec>] [-n <N>] [--root] [--dry-run] [--separate] [--mode <single|shift>] [--no-sign]
 ```
 
 ## Choosing the commits
@@ -27,22 +27,26 @@ A commit list opens, oldest at the top. Move around and adjust dates:
 |-----|--------|
 | `up` / `down`, `k` / `j` | select a commit |
 | `left` / `right`, `h` / `l` | move between date fields (year, month, day, hour, minute) |
-| `+` / `-`, `shift+up` / `shift+down` | adjust the focused field (with calendar carry) |
+| `+` / `-`, `shift+up` / `shift+down`, `ctrl-a` / `ctrl-x` | adjust the focused field (with calendar carry) |
 | `e` / `Enter` | type an absolute date (`YYYY-MM-DD HH:MM`) |
-| `Tab` | expand the row to edit author and committer (and their offsets) separately |
-| `t` | switch between author and committer in an expanded row |
+| `Space` | expand the row to edit author and committer (and their offsets) separately |
+| `Tab` / `shift-Tab` | switch between author and committer in an expanded row |
 | `s` | toggle single / shift edit mode |
 | `c` | copy the previous (older) commit's time onto this one |
 | `=` | spread the commits evenly in time between the first and last |
-| `d` | reset the selected commit to its original dates |
-| `?` | toggle the help overlay |
-| `w` | write the changes |
-| `q` / `Esc` / `Ctrl-C` | cancel without writing |
+| `u` | reset the selected commit to its original dates |
+| `?` / `F1` | toggle the help overlay |
+| `w` / `W` | write the changes (confirm / force) |
+| `q` / `Q` / `Esc` | quit (confirm / force); `Ctrl-C` aborts |
+
+The bindings follow common TUI conventions (lazygit, gitui, tig, vim).
+`w` and `q`/`Esc` ask to confirm when there are unsaved edits; the
+uppercase `W` / `Q` skip the prompt.
 
 By default one date is applied to both the author and committer
 timestamps. Each commit keeps its original UTC offset; the wall-clock
-time you edit is interpreted in that offset (expand a row with `Tab` to
-change the offset).
+time you edit is interpreted in that offset (expand a row with `Space`
+to change the offset).
 
 ## Edit modes
 
@@ -95,9 +99,24 @@ Rewriting history changes commit ids. git-redate keeps this recoverable:
 - Only commit dates change; file trees are untouched, so a dirty working
   tree is preserved (git-redate just prints a notice).
 
+## Signatures
+
+A signature covers the commit's dates, so changing a date invalidates
+it. git-redate **re-signs** any commit that was originally signed, using
+your repository's signing config - the same `gpg.format` /
+`user.signingkey` that `git commit -S` uses. After a rewrite,
+`git log --show-signature` on the affected commits stays Good.
+
+- Signing runs after the editor exits, so a gpg or ssh passphrase prompt
+  behaves normally. If signing fails (missing key, locked agent), the
+  entire rewrite aborts and nothing is written.
+- `--no-sign` drops signatures instead, leaving the rewritten commits
+  unsigned.
+- SSH and OpenPGP signing are supported. x509/gpgsm is not; run with
+  `--no-sign` for such commits.
+
 ## Limitations (v1)
 
 - Linear history only - a merge commit in the range is refused.
 - The range must end at HEAD.
-- GPG-signed commits have their signature dropped when rewritten (the
-  date change invalidates it); a notice reports how many.
+- x509/gpgsm signatures cannot be re-created (use `--no-sign`).

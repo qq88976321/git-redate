@@ -67,15 +67,18 @@ just site-build / site-serve  # Zensical docs site (website/)
 - repo.rs     gix read: open, config_snapshot, resolve revspec/A..B/
               --root, linear first-parent walk, merge abort
 - rewrite.rs  gix write: rebuild+write commit objects with parent
-              remap, move ref + reflog, dry-run, RewriteReport
-- app.rs      TUI state machine (App, Focus, Mode, edit_mode); pure
-              handle_action, no I/O
-- input.rs    KeyEvent -> Action (pure; `s` toggles single/shift)
+              remap, re-sign or drop signatures, move ref + reflog,
+              dry-run, RewriteReport
+- sign.rs     produce a signature by shelling out to gpg / ssh-keygen
+              (SignFormat, Signer::sign); no crypto in-crate
+- app.rs      TUI state machine (App, Mode incl. Confirm, edit_mode);
+              pure handle, no I/O
+- input.rs    KeyEvent -> Action (pure, context-aware keymap)
 - ui.rs       ratatui rendering + panic-safe TerminalGuard
 
 Pure logic (datetime, model, cli::normalize, config, walk_linear,
-remap_parents) is kept independent of gix and the terminal so it can be
-unit-tested directly.
+remap_parents, sign format/argv helpers) is kept independent of gix and
+the terminal so it can be unit-tested directly.
 
 ## Design decisions (see docs/superpowers spec / plan for rationale)
 
@@ -95,8 +98,13 @@ unit-tested directly.
 - Safety: reflog written on ref move; old tip SHA printed for undo;
   `--dry-run` writes nothing; a dirty worktree is only a notice (trees
   are unchanged, so uncommitted changes are preserved).
-- Signatures: rewriting dates invalidates GPG signatures, so `gpgsig`
-  is dropped and a notice is printed for any signed commit.
+- Signatures: a date change invalidates a commit's signature, so
+  originally-signed commits are RE-signed via the repo's signing config
+  (SSH/OpenPGP, through gpg/ssh-keygen). Signing failure aborts the
+  rewrite; `--no-sign` drops signatures; x509/gpgsm is unsupported.
+- Keymap follows TUI conventions: Space expand, Tab/Shift-Tab
+  author/committer, u reset, +/- and ctrl-a/ctrl-x adjust, w/W write
+  (confirm/force), q/Q/Esc quit (confirm/force), Ctrl-C abort.
 
 ## Manual / driving tests
 

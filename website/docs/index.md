@@ -29,9 +29,12 @@ git redate --dry-run HEAD~5
 See [Install](install.md) to build it and [Usage](usage.md) for the key
 bindings, edit modes, configuration, and recovery.
 
+Signed commits are re-signed with your git signing config (SSH or
+OpenPGP), so `git log --show-signature` stays Good; `--no-sign` drops
+signatures instead.
+
 ## Limitations (v1)
 
 - Linear history only: a range containing a merge commit is refused.
 - The range must end at HEAD (the checked-out tip).
-- GPG signatures are dropped from rewritten commits (the date change
-  invalidates them); a notice is printed when this happens.
+- x509/gpgsm signatures cannot be re-created (use `--no-sign`).
