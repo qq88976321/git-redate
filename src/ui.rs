@@ -6,6 +6,7 @@
 //! lives in `main`.
 
 use crate::app::{App, ConfirmKind, Mode, SubField};
+use crate::cli::EditMode;
 use crate::datetime::{self, Component, Stamp};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::{
@@ -18,6 +19,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::io::{self, Stdout};
+
+// Catppuccin Mocha palette (fixed RGB, dark flavor; https://catppuccin.com).
+// Foreground-only: the terminal's own background is kept, so nothing is
+// repainted and the scheme blends into the surrounding shell.
+const MAUVE: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+const GREEN: Color = Color::Rgb(0xa6, 0xe3, 0xa1);
+const PEACH: Color = Color::Rgb(0xfa, 0xb3, 0x87);
+const YELLOW: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
+const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
+const BLUE: Color = Color::Rgb(0x89, 0xb4, 0xfa);
+const OVERLAY1: Color = Color::Rgb(0x7f, 0x84, 0x9c);
+
+// Semantic roles mapped onto the palette.
+const ACCENT: Color = MAUVE; // brand title, cursor, help title
+const INPUT: Color = BLUE; // edit prompt and help keys (interactive)
+const CHANGED: Color = GREEN; // edited timestamps and the "*" marker
+const DIM: Color = OVERLAY1; // hashes, labels, footer hints, borders
+const CAUTION: Color = PEACH; // dry-run, shift mode, write confirmation
+const INFO: Color = YELLOW; // transient status message
+const DANGER: Color = RED; // discard-and-quit confirmation
 
 /// Draw the whole editor.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -36,7 +57,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         let items: Vec<ListItem> = (0..app.commits.len())
             .map(|i| ListItem::new(commit_lines(app, i)))
             .collect();
-        let list = List::new(items).highlight_symbol("> ");
+        let list = List::new(items)
+            .highlight_symbol(Line::from(Span::styled(
+                "> ",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
         let mut state = ListState::default();
         state.select(Some(app.selected));
         frame.render_stateful_widget(list, chunks[1], &mut state);
@@ -46,14 +72,29 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 fn title(app: &App) -> Paragraph<'static> {
-    let dry = if app.dry_run { "  [dry-run]" } else { "" };
-    let text = format!(
-        "git redate  -  {} commit(s)  [mode: {}]{}",
-        app.commits.len(),
-        app.edit_mode,
-        dry
-    );
-    Paragraph::new(text).block(Block::default().borders(Borders::BOTTOM))
+    let mode_style = match app.edit_mode {
+        EditMode::Shift => Style::default().fg(CAUTION),
+        EditMode::Single => Style::default().fg(DIM),
+    };
+    let mut spans = vec![
+        Span::styled(
+            "git redate",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!("  -  {} commit(s)  ", app.commits.len())),
+        Span::styled(format!("[mode: {}]", app.edit_mode), mode_style),
+    ];
+    if app.dry_run {
+        spans.push(Span::styled(
+            "  [dry-run]",
+            Style::default().fg(CAUTION).add_modifier(Modifier::BOLD),
+        ));
+    }
+    Paragraph::new(Line::from(spans)).block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(DIM)),
+    )
 }
 
 const HINTS: &str = "[up/down] row  [left/right] field  [+/-] adjust  [Space] expand  \
@@ -61,55 +102,91 @@ const HINTS: &str = "[up/down] row  [left/right] field  [+/-] adjust  [Space] ex
      [?] help  [w] write  [q] quit";
 
 fn status(app: &App) -> Paragraph<'static> {
+    let dim = Style::default().fg(DIM);
     let line = match &app.mode {
-        Mode::Editing { buffer } => {
-            format!("type date (YYYY-MM-DD HH:MM): {buffer}_    [Enter] apply  [Esc] cancel")
-        }
+        Mode::Editing { buffer } => Line::from(vec![
+            Span::styled("type date (YYYY-MM-DD HH:MM): ", Style::default().fg(INPUT)),
+            Span::styled(
+                format!("{buffer}_"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    [Enter] apply  [Esc] cancel", dim),
+        ]),
         Mode::Confirm { kind } => {
             let n = app.commits.iter().filter(|c| c.changed()).count();
-            match kind {
-                ConfirmKind::Write => {
-                    format!("rewrite {n} commit(s)?   [y] yes    [n/Esc] no")
-                }
-                ConfirmKind::Quit => {
-                    format!("discard {n} change(s) and quit?   [y] yes    [n/Esc] no")
-                }
-            }
+            let (prompt, style) = match kind {
+                ConfirmKind::Write => (
+                    format!("rewrite {n} commit(s)?"),
+                    Style::default().fg(CAUTION).add_modifier(Modifier::BOLD),
+                ),
+                ConfirmKind::Quit => (
+                    format!("discard {n} change(s) and quit?"),
+                    Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+                ),
+            };
+            Line::from(vec![
+                Span::styled(prompt, style),
+                Span::styled("   [y] yes    [n/Esc] no", dim),
+            ])
         }
         Mode::Navigate => match &app.message {
-            Some(msg) => msg.clone(),
-            None => HINTS.to_string(),
+            Some(msg) => Line::from(Span::styled(msg.clone(), Style::default().fg(INFO))),
+            None => Line::from(Span::styled(HINTS, dim)),
         },
     };
-    Paragraph::new(line)
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::TOP))
+    Paragraph::new(line).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(DIM)),
+    )
 }
 
 fn help_widget() -> Paragraph<'static> {
+    let head = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(DIM);
+    // Key column styled INPUT, description left in the default fg. The
+    // key text is padded to a fixed width so the two columns line up.
+    let entry = |keys: &str, desc: &str| {
+        Line::from(vec![
+            Span::styled(format!("  {keys:<20}"), Style::default().fg(INPUT)),
+            Span::raw(desc.to_string()),
+        ])
+    };
     let lines = vec![
-        Line::from("git-redate keys"),
+        Line::from(Span::styled("git-redate keys", head)),
         Line::from(""),
-        Line::from("  up/down, k/j        select commit"),
-        Line::from("  left/right, h/l     move date field"),
-        Line::from("  +/-, shift+up/dn    adjust the field (calendar carry)"),
-        Line::from("  ctrl-a / ctrl-x     adjust the field (vim-style)"),
-        Line::from("  Space               expand author/committer (and offset)"),
-        Line::from("  Tab / shift-Tab     switch author <-> committer (expanded)"),
-        Line::from("  s                   toggle single <-> shift (cascade)"),
-        Line::from("  e / Enter           type an absolute date"),
-        Line::from("  c                   copy the previous (older) commit's time"),
-        Line::from("  =                   spread commits evenly in time"),
-        Line::from("  u                   reset the selected commit"),
+        entry("up/down, k/j", "select commit"),
+        entry("left/right, h/l", "move date field"),
+        entry("+/-, shift+up/dn", "adjust the field (calendar carry)"),
+        entry("ctrl-a / ctrl-x", "adjust the field (vim-style)"),
+        entry("Space", "expand author/committer (and offset)"),
+        entry("Tab / shift-Tab", "switch author <-> committer (expanded)"),
+        entry("s", "toggle single <-> shift (cascade)"),
+        entry("e / Enter", "type an absolute date"),
+        entry("c", "copy the previous (older) commit's time"),
+        entry("=", "spread commits evenly in time"),
+        entry("u", "reset the selected commit"),
         Line::from(""),
-        Line::from("  w / W               write (confirm / force)"),
-        Line::from("  q / Q, Esc          quit (confirm / force)   ctrl-c  abort"),
-        Line::from("  ? / F1              toggle this help"),
+        entry("w / W", "write (confirm / force)"),
+        entry("q / Q, Esc", "quit (confirm / force)   ctrl-c  abort"),
+        entry("? / F1", "toggle this help"),
         Line::from(""),
-        Line::from("  shift mode: editing a commit moves it and every newer"),
-        Line::from("  commit by the same delta, keeping the gaps."),
+        Line::from(Span::styled(
+            "  shift mode: editing a commit moves it and every newer",
+            dim,
+        )),
+        Line::from(Span::styled(
+            "  commit by the same delta, keeping the gaps.",
+            dim,
+        )),
     ];
-    Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" help "))
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(dim)
+            .title(" help ")
+            .title_style(head),
+    )
 }
 
 /// The rendered line(s) for commit `i`.
@@ -117,20 +194,25 @@ fn commit_lines(app: &App, i: usize) -> Vec<Line<'static>> {
     let ec = &app.commits[i];
     let selected = i == app.selected && !app.is_editing();
     let changed = ec.changed();
-    let marker = if changed { "*" } else { " " };
+    let marker = if changed {
+        Span::styled("*", Style::default().fg(CHANGED))
+    } else {
+        Span::raw(" ")
+    };
+    let hash = Span::styled(
+        format!("{}  ", ec.original.short_id),
+        Style::default().fg(DIM),
+    );
 
     if !ec.expanded {
         let focus = if selected { Some(app.component) } else { None };
         let date = datetime::format(ec.author);
-        let mut spans = vec![Span::raw(format!("{marker}{}  ", ec.original.short_id))];
+        let mut spans = vec![marker, hash];
         spans.extend(date_spans(&date, None, focus, changed));
         spans.push(Span::raw(format!("  {}", ec.original.summary)));
         vec![Line::from(spans)]
     } else {
-        let header = Line::from(format!(
-            "{marker}{}  {}",
-            ec.original.short_id, ec.original.summary
-        ));
+        let header = Line::from(vec![marker, hash, Span::raw(ec.original.summary.clone())]);
         let a_focus = focus_for(app, selected, SubField::Author);
         let c_focus = focus_for(app, selected, SubField::Committer);
         vec![
@@ -152,7 +234,10 @@ fn focus_for(app: &App, selected: bool, which: SubField) -> Option<Component> {
 fn sub_line(label: &str, stamp: Stamp, focus: Option<Component>, changed: bool) -> Line<'static> {
     let date = datetime::format(stamp);
     let offset = datetime::format_offset(stamp);
-    let mut spans = vec![Span::raw(format!("    {label}  "))];
+    let mut spans = vec![Span::styled(
+        format!("    {label}  "),
+        Style::default().fg(DIM),
+    )];
     spans.extend(date_spans(&date, Some(&offset), focus, changed));
     Line::from(spans)
 }
@@ -338,5 +423,29 @@ mod tests {
         };
         let content = rendered(&a);
         assert!(content.contains("discard 1 change"));
+    }
+
+    #[test]
+    fn palette_is_applied_to_title_and_changed_rows() {
+        use ratatui::style::Color;
+
+        // The brand title "git redate" is drawn in the accent (mauve).
+        let a = app();
+        let backend = TestBackend::new(90, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &a)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, Color::Rgb(0xcb, 0xa6, 0xf7));
+
+        // Editing a commit turns its timestamp (and marker) green.
+        let mut b = app();
+        b.commits[0].author = parse_in_offset("2024-02-02 02:00", 0).unwrap();
+        let backend = TestBackend::new(90, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &b)).unwrap();
+        let buf = terminal.backend().buffer();
+        let green = Color::Rgb(0xa6, 0xe3, 0xa1);
+        let has_green = (0u16..90).any(|x| buf.cell((x, 2)).unwrap().fg == green);
+        assert!(has_green, "changed commit row should contain green cells");
     }
 }
