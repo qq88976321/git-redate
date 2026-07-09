@@ -11,9 +11,85 @@
 use crate::datetime::Stamp;
 use crate::error::RedateError;
 use crate::model::EditableCommit;
+use crate::repo::RefTarget;
 use gix::bstr::ByteSlice;
 use gix::ObjectId;
 use std::collections::HashMap;
+
+/// Outcome of a completed rewrite, for the summary printed to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RewriteReport {
+    /// Tip before the rewrite (the undo target).
+    pub old_tip: ObjectId,
+    /// Tip after the rewrite (equals old_tip when nothing changed).
+    pub new_tip: ObjectId,
+    /// Number of commits rewritten.
+    pub count: usize,
+    /// Commits whose GPG signature was dropped.
+    pub dropped_signatures: usize,
+}
+
+/// Rewrite the edited commits and move the current branch/HEAD to the
+/// new tip, writing a reflog entry. A no-op (nothing changed) leaves
+/// the ref untouched. Not called for `--dry-run` (which writes nothing;
+/// main prints the planned changes from the model instead).
+pub fn apply(
+    repo: &gix::Repository,
+    commits: &[EditableCommit],
+    old_tip: ObjectId,
+    ref_target: &RefTarget,
+) -> Result<RewriteReport, RedateError> {
+    let rewritten = write_rewritten(repo, commits)?;
+    if rewritten.count > 0 {
+        move_ref(
+            repo,
+            ref_target,
+            old_tip,
+            rewritten.new_tip,
+            rewritten.count,
+        )?;
+    }
+    Ok(RewriteReport {
+        old_tip,
+        new_tip: rewritten.new_tip,
+        count: rewritten.count,
+        dropped_signatures: rewritten.dropped_signatures,
+    })
+}
+
+/// Point the branch (or detached HEAD) at `new_tip`, writing a reflog
+/// entry and asserting it still points at `old_tip` first.
+fn move_ref(
+    repo: &gix::Repository,
+    ref_target: &RefTarget,
+    old_tip: ObjectId,
+    new_tip: ObjectId,
+    count: usize,
+) -> Result<(), RedateError> {
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+    use gix::refs::Target;
+
+    let name: gix::refs::FullName = match ref_target {
+        RefTarget::Branch(n) => n.clone(),
+        RefTarget::Detached => "HEAD".try_into().map_err(write_err)?,
+    };
+    let message = format!("redate: rewrote {count} commit(s)");
+    repo.edit_reference(RefEdit {
+        change: Change::Update {
+            log: LogChange {
+                mode: RefLog::AndReference,
+                force_create_reflog: true,
+                message: message.into(),
+            },
+            expected: PreviousValue::MustExistAndMatch(Target::Object(old_tip)),
+            new: Target::Object(new_tip),
+        },
+        name,
+        deref: false,
+    })
+    .map_err(write_err)?;
+    Ok(())
+}
 
 /// Result of rebuilding the range's commit objects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,5 +396,91 @@ mod tests {
             assert_eq!(c.author().unwrap().time().unwrap().seconds, want);
             assert_eq!(c.committer().unwrap().time().unwrap().seconds, want);
         }
+    }
+
+    /// Point a ref at `oid` (creating it), used to set up HEAD/branch.
+    fn set_ref(repo: &gix::Repository, name: &str, oid: ObjectId) {
+        use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+        use gix::refs::Target;
+        repo.edit_reference(RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: true,
+                    message: "setup".into(),
+                },
+                expected: PreviousValue::Any,
+                new: Target::Object(oid),
+            },
+            name: name.try_into().unwrap(),
+            deref: false,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn apply_moves_a_branch_to_the_new_tip() {
+        let s = scratch();
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+
+        crate::model::bump(
+            &mut commits,
+            0,
+            crate::model::Target::Both,
+            datetime::Component::Hour,
+            2,
+            true,
+        );
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name)).unwrap();
+
+        assert_eq!(report.count, 3);
+        assert_eq!(report.old_tip, old_tip);
+        assert_ne!(report.new_tip, old_tip);
+        // The branch now points at the new tip.
+        let branch_tip = s
+            .repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .id()
+            .detach();
+        assert_eq!(branch_tip, report.new_tip);
+    }
+
+    #[test]
+    fn apply_moves_detached_head() {
+        let s = scratch();
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "HEAD", old_tip);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
+        crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Detached).unwrap();
+
+        assert_eq!(report.count, 1);
+        let head_id = s.repo.head_id().unwrap().detach();
+        assert_eq!(head_id, report.new_tip);
+    }
+
+    #[test]
+    fn apply_noop_leaves_the_ref() {
+        let s = scratch();
+        let commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name)).unwrap();
+        assert_eq!(report.count, 0);
+        assert_eq!(report.new_tip, old_tip);
+        let branch_tip = s
+            .repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .id()
+            .detach();
+        assert_eq!(branch_tip, old_tip);
     }
 }
