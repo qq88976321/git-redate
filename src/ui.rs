@@ -16,7 +16,7 @@ use ratatui::crossterm::{
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 use std::io::{self, Stdout};
 
@@ -44,10 +44,14 @@ const DANGER: Color = RED; // discard-and-quit confirmation
 
 /// Draw the whole editor.
 pub fn render(frame: &mut Frame, app: &App) {
+    // The footer sizes itself: one line for a prompt/message, up to two
+    // for the packed hints, plus its top border.
+    let footer = status_lines(app, frame.area().width);
+    let footer_h = (footer.len() as u16 + 1).clamp(2, 3);
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
-        Constraint::Length(2),
+        Constraint::Length(footer_h),
     ])
     .split(frame.area());
 
@@ -70,7 +74,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         frame.render_stateful_widget(list, chunks[1], &mut state);
     }
 
-    frame.render_widget(status(app), chunks[2]);
+    frame.render_widget(status_widget(footer), chunks[2]);
 }
 
 fn title(app: &App) -> Paragraph<'static> {
@@ -99,9 +103,128 @@ fn title(app: &App) -> Paragraph<'static> {
     )
 }
 
-const HINTS: &str = "[up/down] row  [left/right] field  [+/-] adjust  [Space] expand  \
-     [Tab] author/committer  [s] mode  [e] type  [c] copy-prev  [=] spread  [u] reset  \
-     [?] help  [w] write  [q] quit";
+/// A single footer hint, tagged with a priority tier: tier 0 is always
+/// most worth showing, tier 2 the least (dropped first when the terminal
+/// is too narrow to fit everything in two rows).
+struct Hint {
+    text: &'static str,
+    tier: u8,
+}
+
+/// The footer hints, richest first within each tier. The full, always-
+/// visible list lives in the `?` help panel; this is the space-limited
+/// subset packed into the status bar.
+const HINTS: &[Hint] = &[
+    // tier 0: core editing and exits.
+    Hint {
+        text: "[j/k] row",
+        tier: 0,
+    },
+    Hint {
+        text: "[h/l] field",
+        tier: 0,
+    },
+    Hint {
+        text: "[+/-] adjust",
+        tier: 0,
+    },
+    Hint {
+        text: "[e] type",
+        tier: 0,
+    },
+    Hint {
+        text: "[w] write",
+        tier: 0,
+    },
+    Hint {
+        text: "[q] quit",
+        tier: 0,
+    },
+    Hint {
+        text: "[?] help",
+        tier: 0,
+    },
+    // tier 1: common helpers.
+    Hint {
+        text: "[Space] expand",
+        tier: 1,
+    },
+    Hint {
+        text: "[/] search",
+        tier: 1,
+    },
+    Hint {
+        text: "[s] mode",
+        tier: 1,
+    },
+    Hint {
+        text: "[u] reset",
+        tier: 1,
+    },
+    Hint {
+        text: "[ctrl-z] undo",
+        tier: 1,
+    },
+    // tier 2: niche, dropped first (and only useful in context).
+    Hint {
+        text: "[Tab] author/commit (expand first)",
+        tier: 2,
+    },
+    Hint {
+        text: "[=] spread interior evenly",
+        tier: 2,
+    },
+    Hint {
+        text: "[c] copy-prev",
+        tier: 2,
+    },
+    Hint {
+        text: "[U] reset all",
+        tier: 2,
+    },
+    Hint {
+        text: "[ctrl-r] redo",
+        tier: 2,
+    },
+];
+
+/// Pack the hints into at most two rows for the given width, highest
+/// tier first, so the least important (Tab, =, ...) drop off a narrow
+/// terminal while the essentials stay.
+fn hint_lines(width: u16) -> Vec<Line<'static>> {
+    const MAX_ROWS: usize = 2;
+    const SEP: &str = "  ";
+    let width = width as usize;
+    let mut lines: Vec<String> = vec![String::new()];
+    'outer: for tier in 0..=2u8 {
+        for h in HINTS.iter().filter(|h| h.tier == tier) {
+            let last_len = lines.last().unwrap().len();
+            let fits_here = if last_len == 0 {
+                h.text.len() <= width
+            } else {
+                last_len + SEP.len() + h.text.len() <= width
+            };
+            if fits_here {
+                let last = lines.last_mut().unwrap();
+                if !last.is_empty() {
+                    last.push_str(SEP);
+                }
+                last.push_str(h.text);
+            } else if lines.len() < MAX_ROWS && h.text.len() <= width {
+                lines.push(h.text.to_string());
+            } else if lines.len() >= MAX_ROWS {
+                // No rows left; the rest are lower priority, so stop.
+                break 'outer;
+            }
+            // else: too wide even alone on a fresh row -> skip it.
+        }
+    }
+    lines
+        .into_iter()
+        .filter(|l| !l.is_empty())
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(DIM))))
+        .collect()
+}
 
 /// Split `text` at byte cursor `cur` into (before, cursor-char, after);
 /// the middle is the char under the cursor (a space past the end) so it
@@ -117,17 +240,19 @@ fn cursor_split(text: &str, cur: usize) -> (&str, String, &str) {
     }
 }
 
-fn status(app: &App) -> Paragraph<'static> {
+/// The footer content lines for the current mode: a single prompt or
+/// message line, or the packed navigation hints when idle.
+fn status_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(DIM);
-    let line = match &app.mode {
-        Mode::Editing { buffer } => Line::from(vec![
+    match &app.mode {
+        Mode::Editing { buffer } => vec![Line::from(vec![
             Span::styled("type date (YYYY-MM-DD HH:MM): ", Style::default().fg(INPUT)),
             Span::styled(
                 format!("{buffer}_"),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled("    [Enter] apply  [Esc] cancel", dim),
-        ]),
+        ])],
         Mode::Confirm { kind } => {
             let n = app.commits.iter().filter(|c| c.changed()).count();
             let (prompt, style) = match kind {
@@ -144,28 +269,35 @@ fn status(app: &App) -> Paragraph<'static> {
                     Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
                 ),
             };
-            Line::from(vec![
+            vec![Line::from(vec![
                 Span::styled(prompt, style),
                 Span::styled("   [y] yes    [n/Esc] no", dim),
-            ])
+            ])]
         }
         Mode::Search { editor } => {
             let (before, at, after) = cursor_split(editor.text(), editor.cursor());
             let bold = Style::default().add_modifier(Modifier::BOLD);
-            Line::from(vec![
+            vec![Line::from(vec![
                 Span::styled("search: ", Style::default().fg(INPUT)),
                 Span::styled(before.to_string(), bold),
                 Span::styled(at, bold.add_modifier(Modifier::REVERSED)),
                 Span::styled(after.to_string(), bold),
                 Span::styled("    [Enter] jump  [Esc] cancel   n/N next/prev", dim),
-            ])
+            ])]
         }
         Mode::Navigate => match &app.message {
-            Some(msg) => Line::from(Span::styled(msg.clone(), Style::default().fg(INFO))),
-            None => Line::from(Span::styled(HINTS, dim)),
+            Some(msg) => vec![Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(INFO),
+            ))],
+            None => hint_lines(width),
         },
-    };
-    Paragraph::new(line).wrap(Wrap { trim: true }).block(
+    }
+}
+
+/// Wrap the footer content lines in the top-bordered status block.
+fn status_widget(lines: Vec<Line<'static>>) -> Paragraph<'static> {
+    Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(DIM)),
@@ -192,11 +324,17 @@ fn help_widget() -> Paragraph<'static> {
         entry("+/-, shift+up/dn", "adjust the field (calendar carry)"),
         entry("ctrl-a / ctrl-x", "adjust the field (vim-style)"),
         entry("Space", "expand author/committer (and offset)"),
-        entry("Tab / shift-Tab", "switch author <-> committer (expanded)"),
+        entry(
+            "Tab / shift-Tab",
+            "switch author <-> committer (expand with Space first)",
+        ),
         entry("s", "toggle single <-> shift (cascade)"),
         entry("e / Enter", "type an absolute date"),
         entry("c", "copy the previous (older) commit's time"),
-        entry("=", "spread commits evenly in time"),
+        entry(
+            "=",
+            "distribute the middle commits evenly (first/last fixed)",
+        ),
         entry("u", "reset the selected commit"),
         entry("U", "reset all commits"),
         entry("ctrl-z / ctrl-r", "undo / redo the last edit"),
@@ -470,6 +608,32 @@ mod tests {
         let content = rendered(&a);
         assert!(content.contains("search:"));
         assert!(content.contains("fix"));
+    }
+
+    #[test]
+    fn footer_hints_pack_into_two_rows_and_drop_low_priority() {
+        fn joined(lines: &[Line]) -> String {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        // Wide: at most two rows, and the essentials are present.
+        let wide = hint_lines(200);
+        assert!(wide.len() <= 2);
+        let text = joined(&wide);
+        assert!(text.contains("write") && text.contains("quit"));
+
+        // Narrow: still capped at two rows, and the tier-2 niceties
+        // (Tab, spread) are dropped before the essentials.
+        let narrow = hint_lines(30);
+        assert!(narrow.len() <= 2);
+        let ntext = joined(&narrow);
+        assert!(!ntext.contains("spread"));
+        assert!(!ntext.contains("author/commit"));
     }
 
     #[test]
