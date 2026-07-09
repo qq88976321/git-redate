@@ -10,6 +10,7 @@ use crate::cli::RangeRequest;
 use crate::datetime::Stamp;
 use crate::error::RedateError;
 use crate::model::Commit;
+use crate::sign::{SignFormat, Signer};
 use gix::ObjectId;
 
 /// Where the rewritten tip should be written back.
@@ -43,6 +44,27 @@ pub fn config_edit_mode(repo: &gix::Repository) -> Option<String> {
     repo.config_snapshot()
         .string("redate.mode")
         .map(|v| v.to_string())
+}
+
+/// The signer implied by the repository's git config (`gpg.format`,
+/// `user.signingkey`, and the per-format program), used to re-sign
+/// rewritten commits that were originally signed.
+pub fn signing_config(repo: &gix::Repository) -> Signer {
+    let cfg = repo.config_snapshot();
+    let get = |key: &str| cfg.string(key).map(|v| v.to_string());
+
+    let format = SignFormat::parse(&get("gpg.format").unwrap_or_default());
+    let key = get("user.signingkey").unwrap_or_default();
+    let program = match format {
+        SignFormat::Ssh => get("gpg.ssh.program").unwrap_or_else(|| "ssh-keygen".to_string()),
+        SignFormat::X509 => get("gpg.x509.program").unwrap_or_else(|| "gpgsm".to_string()),
+        SignFormat::OpenPgp => get("gpg.program").unwrap_or_else(|| "gpg".to_string()),
+    };
+    Signer {
+        format,
+        key,
+        program: program.into(),
+    }
 }
 
 /// Resolve the requested range against `repo` and snapshot its commits.
@@ -257,5 +279,23 @@ mod tests {
     fn single_commit_repo_takes_the_root() {
         let got = walk_linear(0, None, Some(10), linear(&[(0, vec![])])).unwrap();
         assert_eq!(got, vec![0]);
+    }
+
+    #[test]
+    fn signing_config_reads_ssh_format_and_key() {
+        let dir = std::env::temp_dir().join(format!("git-redate-cfg-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        gix::init(&dir).unwrap();
+        // Append signing config, then reopen to pick it up.
+        let cfg = dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&cfg).unwrap_or_default();
+        text.push_str("[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = /keys/id.pub\n");
+        std::fs::write(&cfg, text).unwrap();
+        let repo = gix::open(&dir).unwrap();
+        let s = signing_config(&repo);
+        assert_eq!(s.format, SignFormat::Ssh);
+        assert_eq!(s.key, "/keys/id.pub");
+        assert_eq!(s.program.to_string_lossy(), "ssh-keygen");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

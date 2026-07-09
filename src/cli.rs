@@ -69,6 +69,10 @@ pub struct Cli {
     /// Startup edit mode; overrides `git config redate.mode`.
     #[arg(long, value_enum, value_name = "single|shift")]
     pub mode: Option<EditMode>,
+
+    /// Drop GPG/SSH signatures instead of re-signing rewritten commits.
+    #[arg(long)]
+    pub no_sign: bool,
 }
 
 /// An abstract range to resolve against a repository. Exactly one of
