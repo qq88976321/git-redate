@@ -173,6 +173,7 @@ fn help_widget() -> Paragraph<'static> {
         entry("=", "spread commits evenly in time"),
         entry("u", "reset the selected commit"),
         entry("U", "reset all commits"),
+        entry("ctrl-z / ctrl-r", "undo / redo the last edit"),
         Line::from(""),
         entry("w / W", "write (confirm / force)"),
         entry("q / Q, Esc", "quit (confirm / force)   ctrl-c  abort"),

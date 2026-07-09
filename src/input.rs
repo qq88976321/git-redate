@@ -38,6 +38,8 @@ pub enum Action {
     CommitEdit,
     CancelEdit,
     // Global.
+    Undo,
+    Redo,
     ToggleHelp,
     Write,
     WriteForce,
@@ -100,6 +102,12 @@ fn map_navigate(key: KeyEvent) -> Action {
     }
     if is_ctrl(&key, 'x') {
         return Action::Decrement;
+    }
+    if is_ctrl(&key, 'z') {
+        return Action::Undo;
+    }
+    if is_ctrl(&key, 'r') {
+        return Action::Redo;
     }
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -201,6 +209,24 @@ mod tests {
     #[test]
     fn reset_all_is_capital_u() {
         assert_eq!(nav(KeyCode::Char('U')), Action::ResetAll);
+    }
+
+    #[test]
+    fn undo_redo_are_ctrl_z_and_ctrl_r() {
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('z'), KeyModifiers::CONTROL),
+                Context::Navigate
+            ),
+            Action::Undo
+        );
+        assert_eq!(
+            map(
+                key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                Context::Navigate
+            ),
+            Action::Redo
+        );
     }
 
     #[test]

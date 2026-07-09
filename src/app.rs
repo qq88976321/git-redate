@@ -57,6 +57,18 @@ const EXPANDED: [Component; 6] = [
     Component::Offset,
 ];
 
+/// A point-in-time copy of the editable timestamps and cursor, used to
+/// implement undo/redo. Only the mutable timestamps and the cursor are
+/// captured; the view (expanded rows, edit mode) is left as it is.
+#[derive(Clone)]
+struct Snapshot {
+    /// (author, committer) per commit, indexed like `App::commits`.
+    times: Vec<(Stamp, Stamp)>,
+    selected: usize,
+    component: Component,
+    sub: SubField,
+}
+
 /// The interactive editor state.
 pub struct App {
     pub commits: Vec<EditableCommit>,
@@ -70,6 +82,9 @@ pub struct App {
     pub show_help: bool,
     pub quit: bool,
     pub write_requested: bool,
+    /// Undo/redo history of timestamp edits (most recent on top).
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
 }
 
 impl App {
@@ -92,6 +107,8 @@ impl App {
             show_help: false,
             quit: false,
             write_requested: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
         };
         if separate {
             for c in &mut app.commits {
@@ -152,6 +169,70 @@ impl App {
         self.edit_mode == EditMode::Shift
     }
 
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            times: self
+                .commits
+                .iter()
+                .map(|c| (c.author, c.committer))
+                .collect(),
+            selected: self.selected,
+            component: self.component,
+            sub: self.sub,
+        }
+    }
+
+    /// After a timestamp-mutating edit, push `before` onto the undo stack
+    /// (and clear redo - a fresh edit forks history), but only if a
+    /// timestamp actually changed, so no-op edits leave no undo step.
+    fn push_edit(&mut self, before: Snapshot) {
+        let changed = self
+            .commits
+            .iter()
+            .zip(before.times.iter())
+            .any(|(c, t)| c.author != t.0 || c.committer != t.1);
+        if changed {
+            self.undo.push(before);
+            self.redo.clear();
+        }
+    }
+
+    /// Restore timestamps and cursor from a snapshot, leaving the view
+    /// (expanded rows, edit mode) untouched.
+    fn restore(&mut self, s: &Snapshot) {
+        for (c, t) in self.commits.iter_mut().zip(s.times.iter()) {
+            c.author = t.0;
+            c.committer = t.1;
+        }
+        self.selected = s.selected.min(self.commits.len().saturating_sub(1));
+        self.component = s.component;
+        self.sub = s.sub;
+        // The offset field only exists in the expanded view.
+        if self.component == Component::Offset && !self.expanded() {
+            self.component = Component::Minute;
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(prev) = self.undo.pop() {
+            let now = self.snapshot();
+            self.restore(&prev);
+            self.redo.push(now);
+        } else {
+            self.message = Some("nothing to undo".to_string());
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo.pop() {
+            let now = self.snapshot();
+            self.restore(&next);
+            self.undo.push(now);
+        } else {
+            self.message = Some("nothing to redo".to_string());
+        }
+    }
+
     /// Apply an action as a state transition.
     pub fn handle(&mut self, action: Action) {
         self.message = None;
@@ -196,14 +277,24 @@ impl App {
                 self.message = Some(format!("mode: {}", self.edit_mode));
             }
             Action::CopyPrevious => {
+                let before = self.snapshot();
                 model::copy_from_previous(&mut self.commits, self.selected);
+                self.push_edit(before);
             }
             Action::Distribute => {
+                let before = self.snapshot();
                 model::distribute(&mut self.commits);
+                self.push_edit(before);
                 self.message = Some("distributed evenly".to_string());
             }
-            Action::ResetRow => model::reset(&mut self.commits, self.selected),
+            Action::ResetRow => {
+                let before = self.snapshot();
+                model::reset(&mut self.commits, self.selected);
+                self.push_edit(before);
+            }
             Action::ResetAll => self.request_reset_all(),
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
             Action::BeginEdit => self.begin_edit(),
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::Write => self.request_write(false),
@@ -263,7 +354,9 @@ impl App {
                 }
                 ConfirmKind::Quit => self.quit = true,
                 ConfirmKind::ResetAll => {
+                    let before = self.snapshot();
                     model::reset_all(&mut self.commits);
+                    self.push_edit(before);
                     self.mode = Mode::Navigate;
                     self.message = Some("reset all".to_string());
                 }
@@ -298,7 +391,9 @@ impl App {
             Ok(stamp) => {
                 let target = self.target();
                 let cascade = self.cascade();
+                let before = self.snapshot();
                 model::set(&mut self.commits, self.selected, target, stamp, cascade);
+                self.push_edit(before);
                 self.mode = Mode::Navigate;
             }
             Err(e) => {
@@ -325,6 +420,7 @@ impl App {
     }
 
     fn bump(&mut self, steps: i64) {
+        let before = self.snapshot();
         let target = self.target();
         let component = self.component;
         let cascade = self.cascade();
@@ -336,6 +432,7 @@ impl App {
             steps,
             cascade,
         );
+        self.push_edit(before);
     }
 
     fn toggle_expand(&mut self) {
@@ -588,6 +685,47 @@ mod tests {
         b.handle(Action::ResetAll);
         assert_eq!(b.mode, Mode::Navigate);
         assert!(b.message.is_some());
+    }
+
+    #[test]
+    fn undo_and_redo_round_trip_an_edit() {
+        let mut a = edited(EditMode::Single); // row 0 +1h at the hour field
+        assert_eq!(wall(&a, 0), "2024-01-01 02:00");
+        a.handle(Action::Undo);
+        assert_eq!(wall(&a, 0), "2024-01-01 01:00");
+        assert!(!crate::model::any_changed(&a.commits));
+        a.handle(Action::Redo);
+        assert_eq!(wall(&a, 0), "2024-01-01 02:00");
+    }
+
+    #[test]
+    fn a_fresh_edit_forks_history_and_clears_redo() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::Undo); // back to the clean state
+        assert_eq!(wall(&a, 0), "2024-01-01 01:00");
+        // A new edit while there is redo history discards that redo.
+        a.component = Component::Hour;
+        a.handle(Action::Increment); // 02:00 again, but a distinct step
+        a.handle(Action::Redo);
+        assert_eq!(a.message.as_deref(), Some("nothing to redo"));
+        assert_eq!(wall(&a, 0), "2024-01-01 02:00");
+    }
+
+    #[test]
+    fn undo_with_empty_history_reports() {
+        let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
+        a.handle(Action::Undo);
+        assert_eq!(a.message.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn no_op_edit_records_no_undo_step() {
+        // copy-from-previous at the oldest commit changes nothing, so
+        // there is nothing to undo afterwards.
+        let mut a = app(&["2024-01-01 01:00", "2024-01-01 02:00"], EditMode::Single);
+        a.handle(Action::CopyPrevious); // selected == 0 -> no-op
+        a.handle(Action::Undo);
+        assert_eq!(a.message.as_deref(), Some("nothing to undo"));
     }
 
     #[test]
