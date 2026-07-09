@@ -11,6 +11,7 @@ pub mod config;
 pub mod datetime;
 pub mod error;
 pub mod input;
+pub mod lineedit;
 pub mod model;
 pub mod repo;
 pub mod rewrite;
