@@ -18,6 +18,13 @@ build:
 install:
     cargo install --path .
 
+# Fast local install (dev profile, no LTO) for a working `git-redate`
+# on PATH. Much quicker than `install` after code changes, since it
+# skips the release profile's whole-program LTO; use `install` only
+# when you actually want the optimized binary.
+install-dev:
+    cargo install --path . --debug
+
 # Run unit tests.
 test:
     cargo test
