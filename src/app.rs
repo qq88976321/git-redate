@@ -133,8 +133,13 @@ impl App {
         matches!(self.mode, Mode::Editing { .. })
     }
 
-    /// The input keymap that applies to the current mode.
+    /// The input keymap that applies to the current mode. The help panel
+    /// captures input while it is open (it is only ever open over the
+    /// Navigate mode).
     pub fn context(&self) -> crate::input::Context {
+        if self.show_help {
+            return crate::input::Context::Help;
+        }
         match self.mode {
             Mode::Editing { .. } => crate::input::Context::Editing,
             Mode::Confirm { .. } => crate::input::Context::Confirm,
@@ -253,6 +258,11 @@ impl App {
             self.quit = true;
             return;
         }
+        // The help panel captures input while it is open.
+        if self.show_help {
+            self.handle_help(action);
+            return;
+        }
         match self.mode {
             Mode::Editing { .. } => self.handle_editing(action),
             Mode::Confirm { .. } => self.handle_confirm(action),
@@ -308,12 +318,7 @@ impl App {
             Action::ResetAll => self.request_reset_all(),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
-            Action::BeginSearch => {
-                self.search_origin = self.selected;
-                self.mode = Mode::Search {
-                    editor: LineEditor::default(),
-                };
-            }
+            Action::BeginSearch => self.begin_search(),
             Action::NextMatch => self.jump_match(1),
             Action::PrevMatch => self.jump_match(-1),
             Action::BeginEdit => self.begin_edit(),
@@ -385,6 +390,27 @@ impl App {
             Action::ConfirmNo => self.mode = Mode::Navigate,
             _ => {}
         }
+    }
+
+    /// Keys while the help panel is open: dismiss it, or open a search.
+    /// All other actions are ignored (help does not quit or edit).
+    fn handle_help(&mut self, action: Action) {
+        match action {
+            Action::ToggleHelp => self.show_help = false,
+            Action::BeginSearch => self.begin_search(),
+            _ => {}
+        }
+    }
+
+    /// Open the incremental search prompt, remembering the current
+    /// selection so it can be restored on cancel. Also closes help, so
+    /// `/` works both from Navigate and from the help panel.
+    fn begin_search(&mut self) {
+        self.show_help = false;
+        self.search_origin = self.selected;
+        self.mode = Mode::Search {
+            editor: LineEditor::default(),
+        };
     }
 
     fn handle_search(&mut self, action: Action) {
@@ -874,6 +900,36 @@ mod tests {
         let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
         a.handle(Action::NextMatch);
         assert!(a.message.is_some());
+    }
+
+    #[test]
+    fn help_toggles_and_esc_closes_it_without_quitting() {
+        let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
+        a.handle(Action::ToggleHelp); // open
+        assert!(a.show_help);
+        // In the help context Esc maps to ToggleHelp: it closes help only.
+        a.handle(Action::ToggleHelp);
+        assert!(!a.show_help);
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn help_swallows_other_actions_instead_of_quitting() {
+        let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
+        a.handle(Action::ToggleHelp);
+        // Even a raw Quit action must not quit while help is open.
+        a.handle(Action::Quit);
+        assert!(a.show_help);
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn slash_from_help_enters_search() {
+        let mut a = app(&["2024-01-01 01:00", "2024-01-01 02:00"], EditMode::Single);
+        a.handle(Action::ToggleHelp);
+        a.handle(Action::BeginSearch);
+        assert!(!a.show_help);
+        assert!(matches!(a.mode, Mode::Search { .. }));
     }
 
     #[test]

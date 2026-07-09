@@ -65,6 +65,7 @@ pub enum Context {
     Editing,
     Confirm,
     Search,
+    Help,
 }
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -81,7 +82,21 @@ pub fn map(key: KeyEvent, ctx: Context) -> Action {
         Context::Editing => map_editing(key),
         Context::Confirm => map_confirm(key),
         Context::Search => map_search(key),
+        Context::Help => map_help(key),
         Context::Navigate => map_navigate(key),
+    }
+}
+
+/// While the help panel is open: dismiss it, or jump straight into a
+/// search. Everything else is swallowed so no key leaks through to a
+/// navigation action (in particular Esc must not quit the program).
+fn map_help(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('?') | KeyCode::F(1) | KeyCode::Esc | KeyCode::Char('q') => {
+            Action::ToggleHelp
+        }
+        KeyCode::Char('/') => Action::BeginSearch,
+        _ => Action::None,
     }
 }
 
@@ -373,6 +388,19 @@ mod tests {
             ),
             Action::QuitForce
         );
+    }
+
+    #[test]
+    fn help_context_dismisses_or_searches() {
+        let h = |code| map(key(code), Context::Help);
+        assert_eq!(h(KeyCode::Esc), Action::ToggleHelp);
+        assert_eq!(h(KeyCode::Char('?')), Action::ToggleHelp);
+        assert_eq!(h(KeyCode::Char('q')), Action::ToggleHelp);
+        assert_eq!(h(KeyCode::F(1)), Action::ToggleHelp);
+        assert_eq!(h(KeyCode::Char('/')), Action::BeginSearch);
+        // Other keys are swallowed (must not leak to quit/navigation).
+        assert_eq!(h(KeyCode::Char('w')), Action::None);
+        assert_eq!(h(KeyCode::Char('j')), Action::None);
     }
 
     #[test]
