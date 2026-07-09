@@ -14,4 +14,5 @@ pub mod input;
 pub mod model;
 pub mod repo;
 pub mod rewrite;
+pub mod sign;
 pub mod ui;
