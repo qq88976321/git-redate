@@ -4,3 +4,5 @@
 //! library so the pure logic (time math, edit operations, range
 //! parsing) can be unit-tested without a terminal or a real repository.
 //! Modules are declared here as they are implemented.
+
+pub mod error;
