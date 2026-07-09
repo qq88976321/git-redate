@@ -17,6 +17,13 @@ pub enum SubField {
     Committer,
 }
 
+/// What a confirmation prompt will do if accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmKind {
+    Write,
+    Quit,
+}
+
 /// Top-level interaction mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -24,6 +31,10 @@ pub enum Mode {
     /// Typing an absolute date into the focused field.
     Editing {
         buffer: String,
+    },
+    /// Awaiting y/N for a write or a discard-and-quit.
+    Confirm {
+        kind: ConfirmKind,
     },
 }
 
@@ -97,6 +108,7 @@ impl App {
     pub fn context(&self) -> crate::input::Context {
         match self.mode {
             Mode::Editing { .. } => crate::input::Context::Editing,
+            Mode::Confirm { .. } => crate::input::Context::Confirm,
             Mode::Navigate => crate::input::Context::Navigate,
         }
     }
@@ -142,8 +154,14 @@ impl App {
     /// Apply an action as a state transition.
     pub fn handle(&mut self, action: Action) {
         self.message = None;
+        // A hard abort (Ctrl-C) quits immediately from any mode.
+        if action == Action::QuitForce {
+            self.quit = true;
+            return;
+        }
         match self.mode {
             Mode::Editing { .. } => self.handle_editing(action),
+            Mode::Confirm { .. } => self.handle_confirm(action),
             Mode::Navigate => self.handle_navigate(action),
         }
     }
@@ -186,11 +204,52 @@ impl App {
             Action::ResetRow => model::reset(&mut self.commits, self.selected),
             Action::BeginEdit => self.begin_edit(),
             Action::ToggleHelp => self.show_help = !self.show_help,
-            Action::Write => {
-                self.write_requested = true;
-                self.quit = true;
-            }
-            Action::Quit => self.quit = true,
+            Action::Write => self.request_write(false),
+            Action::WriteForce => self.request_write(true),
+            Action::Quit => self.request_quit(false),
+            _ => {}
+        }
+    }
+
+    /// `w` prompts before writing when there are edits; `W` (force) and
+    /// a no-op (nothing changed) write straight through.
+    fn request_write(&mut self, force: bool) {
+        if force || !model::any_changed(&self.commits) {
+            self.write_requested = true;
+            self.quit = true;
+        } else {
+            self.mode = Mode::Confirm {
+                kind: ConfirmKind::Write,
+            };
+        }
+    }
+
+    /// `q`/`Esc` prompt before discarding edits; `Q` (force) and a clean
+    /// tree quit straight through.
+    fn request_quit(&mut self, force: bool) {
+        if force || !model::any_changed(&self.commits) {
+            self.quit = true;
+        } else {
+            self.mode = Mode::Confirm {
+                kind: ConfirmKind::Quit,
+            };
+        }
+    }
+
+    fn handle_confirm(&mut self, action: Action) {
+        let kind = match &self.mode {
+            Mode::Confirm { kind } => *kind,
+            _ => return,
+        };
+        match action {
+            Action::ConfirmYes => match kind {
+                ConfirmKind::Write => {
+                    self.write_requested = true;
+                    self.quit = true;
+                }
+                ConfirmKind::Quit => self.quit = true,
+            },
+            Action::ConfirmNo => self.mode = Mode::Navigate,
             _ => {}
         }
     }
@@ -400,7 +459,8 @@ mod tests {
     }
 
     #[test]
-    fn write_and_quit_set_flags() {
+    fn write_and_quit_without_edits_go_straight_through() {
+        // Nothing changed -> no confirmation prompt.
         let mut a = app(&["2024-01-01 01:00"], EditMode::Single);
         a.handle(Action::Write);
         assert!(a.write_requested);
@@ -410,6 +470,70 @@ mod tests {
         b.handle(Action::Quit);
         assert!(!b.write_requested);
         assert!(b.quit);
+    }
+
+    fn edited(mode: EditMode) -> App {
+        let mut a = app(&["2024-01-01 01:00", "2024-01-01 02:00"], mode);
+        a.component = Component::Hour;
+        a.handle(Action::Increment); // make row 0 dirty
+        assert!(crate::model::any_changed(&a.commits));
+        a
+    }
+
+    #[test]
+    fn write_with_edits_prompts_then_confirms() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::Write);
+        assert!(matches!(
+            a.mode,
+            Mode::Confirm {
+                kind: ConfirmKind::Write
+            }
+        ));
+        assert_eq!(a.context(), crate::input::Context::Confirm);
+        assert!(!a.write_requested && !a.quit);
+        a.handle(Action::ConfirmYes);
+        assert!(a.write_requested && a.quit);
+    }
+
+    #[test]
+    fn write_prompt_can_be_cancelled() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::Write);
+        a.handle(Action::ConfirmNo);
+        assert_eq!(a.mode, Mode::Navigate);
+        assert!(!a.write_requested && !a.quit);
+    }
+
+    #[test]
+    fn force_write_skips_the_prompt() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::WriteForce);
+        assert!(a.write_requested && a.quit);
+    }
+
+    #[test]
+    fn quit_with_edits_prompts_then_discards() {
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::Quit);
+        assert!(matches!(
+            a.mode,
+            Mode::Confirm {
+                kind: ConfirmKind::Quit
+            }
+        ));
+        a.handle(Action::ConfirmYes);
+        assert!(a.quit && !a.write_requested);
+    }
+
+    #[test]
+    fn force_quit_aborts_from_any_mode() {
+        // Even mid text-edit, a hard abort (Ctrl-C -> QuitForce) quits.
+        let mut a = edited(EditMode::Single);
+        a.handle(Action::BeginEdit);
+        assert!(a.is_editing());
+        a.handle(Action::QuitForce);
+        assert!(a.quit && !a.write_requested);
     }
 
     #[test]
