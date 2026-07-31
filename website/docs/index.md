@@ -33,8 +33,14 @@ Signed commits are re-signed with your git signing config (SSH or
 OpenPGP), so `git log --show-signature` stays Good; `--no-sign` drops
 signatures instead.
 
+Tags pointing at rewritten commits move with them (annotated tags are
+rebuilt and re-signed), so they do not stay behind on the old objects;
+`--no-retag` leaves them alone.
+
 ## Limitations (v1)
 
 - Linear history only: a range containing a merge commit is refused.
 - The range must end at HEAD (the checked-out tip).
 - x509/gpgsm signatures cannot be re-created (use `--no-sign`).
+- A tag pointing at another tag is not rewritten (it is reported and
+  left alone), and tags are never pushed for you.
