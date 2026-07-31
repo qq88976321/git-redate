@@ -118,6 +118,17 @@ pub fn any_changed(commits: &[EditableCommit]) -> bool {
     commits.iter().any(EditableCommit::changed)
 }
 
+/// How many of the tags at `tag_indices` (indices into `commits`) would
+/// move if the pending edits were written. Rewriting the first changed
+/// commit changes every commit from there on (parent remap), so a tag
+/// moves exactly when its commit sits at or after that first change.
+pub fn moved_tag_count(commits: &[EditableCommit], tag_indices: &[usize]) -> usize {
+    match commits.iter().position(EditableCommit::changed) {
+        Some(first) => tag_indices.iter().filter(|&&i| i >= first).count(),
+        None => 0,
+    }
+}
+
 /// Increment/decrement a field of commit `i` by `steps`. In `cascade`
 /// mode the resulting seconds delta also shifts every newer commit's
 /// same field, preserving the gaps.
@@ -442,6 +453,21 @@ mod tests {
         assert!(!any_changed(&cs));
         bump(&mut cs, 1, Target::Both, Component::Minute, 1, false);
         assert!(any_changed(&cs));
+    }
+
+    #[test]
+    fn moved_tag_count_follows_first_change() {
+        let mut cs = editable(&["2024-01-01 01:00", "2024-01-01 02:00", "2024-01-01 03:00"]);
+        // Tags on the oldest and the newest commit.
+        let tags = [0, 2];
+        assert_eq!(moved_tag_count(&cs, &tags), 0);
+        // Editing the middle commit rewrites 1 and 2: only the tag on 2.
+        bump(&mut cs, 1, Target::Both, Component::Minute, 1, false);
+        assert_eq!(moved_tag_count(&cs, &tags), 1);
+        // Editing the oldest rewrites everything: both tags move.
+        bump(&mut cs, 0, Target::Both, Component::Minute, 1, false);
+        assert_eq!(moved_tag_count(&cs, &tags), 2);
+        assert_eq!(moved_tag_count(&cs, &[]), 0);
     }
 
     #[test]
