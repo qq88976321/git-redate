@@ -9,7 +9,7 @@ use git_redate::datetime;
 use git_redate::error::RedateError;
 use git_redate::input;
 use git_redate::model::EditableCommit;
-use git_redate::rewrite::RewriteReport;
+use git_redate::rewrite::{RewriteReport, TagSig};
 use git_redate::{config, repo, rewrite, ui};
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -43,6 +43,25 @@ fn run() -> Result<ExitCode> {
         );
     }
 
+    // Tags pointing into the range move with their commits unless
+    // --no-retag asks to leave them behind.
+    let tag_scan = if cli.no_retag {
+        repo::TagScan::default()
+    } else {
+        repo::tags_in_range(&repository, &loaded.commits).context("scanning tags")?
+    };
+    for warning in &tag_scan.skipped {
+        eprintln!("git-redate: {warning}");
+    }
+    if !tag_scan.tags.is_empty() {
+        eprintln!(
+            "git-redate: note: {} tag(s) point at commits in this range; \
+             they move with the commits that get rewritten \
+             (--no-retag to leave them)",
+            tag_scan.tags.len()
+        );
+    }
+
     let editable: Vec<EditableCommit> = loaded
         .commits
         .into_iter()
@@ -53,7 +72,7 @@ fn run() -> Result<ExitCode> {
         effective.mode,
         cli.dry_run,
         cli.separate,
-        Vec::new(),
+        tag_scan.tags.iter().map(|t| t.commit_index).collect(),
     );
 
     if cli.dry_run {
@@ -62,7 +81,7 @@ fn run() -> Result<ExitCode> {
         if std::io::stdout().is_terminal() {
             run_tui(&mut app).context("running the editor")?;
         }
-        print_plan(&app.commits);
+        print_plan(&app.commits, &tag_scan.tags);
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -89,7 +108,7 @@ fn run() -> Result<ExitCode> {
         &app.commits,
         loaded.old_tip,
         &loaded.ref_target,
-        &[],
+        &tag_scan.tags,
         signer.as_ref(),
     )
     .context("rewriting history")?;
@@ -116,7 +135,7 @@ fn run_tui(app: &mut App) -> Result<()> {
 }
 
 /// Print the planned author-date changes for `--dry-run`.
-fn print_plan(commits: &[EditableCommit]) {
+fn print_plan(commits: &[EditableCommit], tags: &[repo::PlannedTag]) {
     let changed = commits.iter().filter(|c| c.changed()).count();
     println!(
         "dry run: {changed} of {} commit(s) would be rewritten",
@@ -135,6 +154,13 @@ fn print_plan(commits: &[EditableCommit]) {
                 "  {}  {old}  (unchanged)  {}",
                 c.original.short_id, c.original.summary
             );
+        }
+    }
+    // Rewriting starts at the first changed commit, so only tags from
+    // there on would move. No new ids are computed on this path.
+    if let Some(first) = commits.iter().position(EditableCommit::changed) {
+        for t in tags.iter().filter(|t| t.commit_index >= first) {
+            println!("  tag {} would move (currently {})", t.short, t.ref_oid);
         }
     }
 }
@@ -156,6 +182,20 @@ fn print_report(report: &RewriteReport) {
         println!(
             "  note: dropped {} signature(s) invalidated by the date change",
             report.dropped_signatures
+        );
+    }
+    for t in &report.moved_tags {
+        let sig = match t.sig {
+            TagSig::Resigned => "  (re-signed)",
+            TagSig::Dropped => "  (signature dropped)",
+            TagSig::Unsigned => "",
+        };
+        println!("  moved tag {}: {} -> {}{sig}", t.name, t.old, t.new);
+    }
+    if !report.moved_tags.is_empty() {
+        println!(
+            "  note: the undo above does not restore tags; restore one with: \
+             git update-ref refs/tags/<name> <old id above>"
         );
     }
 }
