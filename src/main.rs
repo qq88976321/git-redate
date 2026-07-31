@@ -83,6 +83,7 @@ fn run() -> Result<ExitCode> {
         &app.commits,
         loaded.old_tip,
         &loaded.ref_target,
+        &[],
         signer.as_ref(),
     )
     .context("rewriting history")?;

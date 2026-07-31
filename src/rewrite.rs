@@ -11,7 +11,7 @@
 use crate::datetime::Stamp;
 use crate::error::RedateError;
 use crate::model::EditableCommit;
-use crate::repo::RefTarget;
+use crate::repo::{PlannedTag, RefTarget};
 use crate::sign::Signer;
 use gix::bstr::ByteSlice;
 use gix::objs::WriteTo;
@@ -31,29 +31,59 @@ pub struct RewriteReport {
     pub resigned: usize,
     /// Commits whose signature was dropped (`--no-sign`).
     pub dropped_signatures: usize,
+    /// Tags moved onto the rewritten commits.
+    pub moved_tags: Vec<MovedTag>,
+}
+
+/// What happened to a moved tag's signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagSig {
+    /// The tag had no signature (or is lightweight).
+    Unsigned,
+    /// Originally signed; re-signed for the new target.
+    Resigned,
+    /// Originally signed; signature dropped (`--no-sign`).
+    Dropped,
+}
+
+/// A tag moved onto the rewritten history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedTag {
+    /// Short tag name ("v1.0").
+    pub name: String,
+    /// Old ref target (tag object or commit), for manual restore.
+    pub old: ObjectId,
+    /// New ref target.
+    pub new: ObjectId,
+    /// Signature outcome.
+    pub sig: TagSig,
 }
 
 /// Rewrite the edited commits and move the current branch/HEAD to the
-/// new tip, writing a reflog entry. Originally-signed commits are
-/// re-signed with `signer` (or dropped when `signer` is `None`, i.e.
-/// `--no-sign`). A no-op (nothing changed) leaves the ref untouched.
-/// Not called for `--dry-run` (which writes nothing).
+/// new tip, writing a reflog entry. Tags in `tags` whose commit was
+/// rewritten move with it, in the same atomic ref transaction as the
+/// branch. Originally-signed commits and tags are re-signed with
+/// `signer` (or dropped when `signer` is `None`, i.e. `--no-sign`).
+/// A no-op (nothing changed) leaves every ref untouched. Not called
+/// for `--dry-run` (which writes nothing).
 pub fn apply(
     repo: &gix::Repository,
     commits: &[EditableCommit],
     old_tip: ObjectId,
     ref_target: &RefTarget,
+    tags: &[PlannedTag],
     signer: Option<&Signer>,
 ) -> Result<RewriteReport, RedateError> {
     let rewritten = write_rewritten(repo, commits, signer)?;
+    let mut moved_tags = Vec::new();
     if rewritten.count > 0 {
-        move_ref(
-            repo,
-            ref_target,
-            old_tip,
-            rewritten.new_tip,
-            rewritten.count,
-        )?;
+        // Rebuild (and re-sign) tag objects first: a signing failure
+        // aborts before any ref has moved.
+        let (tag_edits, moved) = retag(repo, tags, &rewritten.map, signer)?;
+        moved_tags = moved;
+        let branch = branch_edit(ref_target, old_tip, rewritten.new_tip, rewritten.count)?;
+        repo.edit_references(std::iter::once(branch).chain(tag_edits))
+            .map_err(write_err)?;
     }
     Ok(RewriteReport {
         old_tip,
@@ -61,18 +91,18 @@ pub fn apply(
         count: rewritten.count,
         resigned: rewritten.resigned,
         dropped_signatures: rewritten.dropped_signatures,
+        moved_tags,
     })
 }
 
-/// Point the branch (or detached HEAD) at `new_tip`, writing a reflog
-/// entry and asserting it still points at `old_tip` first.
-fn move_ref(
-    repo: &gix::Repository,
+/// The edit pointing the branch (or detached HEAD) at `new_tip`,
+/// writing a reflog entry and asserting it still points at `old_tip`.
+fn branch_edit(
     ref_target: &RefTarget,
     old_tip: ObjectId,
     new_tip: ObjectId,
     count: usize,
-) -> Result<(), RedateError> {
+) -> Result<gix::refs::transaction::RefEdit, RedateError> {
     use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
     use gix::refs::Target;
 
@@ -81,7 +111,7 @@ fn move_ref(
         RefTarget::Detached => "HEAD".try_into().map_err(write_err)?,
     };
     let message = format!("redate: rewrote {count} commit(s)");
-    repo.edit_reference(RefEdit {
+    Ok(RefEdit {
         change: Change::Update {
             log: LogChange {
                 mode: RefLog::AndReference,
@@ -94,8 +124,98 @@ fn move_ref(
         name,
         deref: false,
     })
-    .map_err(write_err)?;
-    Ok(())
+}
+
+/// Build the ref edits moving each planned tag whose commit was
+/// rewritten, rebuilding annotated tag objects on the way. Tags whose
+/// commit kept its id (before the first change) are left alone.
+fn retag(
+    repo: &gix::Repository,
+    tags: &[PlannedTag],
+    map: &HashMap<ObjectId, ObjectId>,
+    signer: Option<&Signer>,
+) -> Result<(Vec<gix::refs::transaction::RefEdit>, Vec<MovedTag>), RedateError> {
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+    use gix::refs::Target;
+
+    let mut edits = Vec::new();
+    let mut moved = Vec::new();
+    for t in tags {
+        let Some(&new_commit) = map.get(&t.commit) else {
+            continue;
+        };
+        let (new_target, sig) = if t.annotated {
+            rebuild_tag(repo, t, new_commit, signer)?
+        } else {
+            (new_commit, TagSig::Unsigned)
+        };
+        edits.push(RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    // git does not reflog tags by default; do not force one.
+                    force_create_reflog: false,
+                    message: "redate: moved to rewritten commit".into(),
+                },
+                expected: PreviousValue::MustExistAndMatch(Target::Object(t.ref_oid)),
+                new: Target::Object(new_target),
+            },
+            name: t.full_name.clone(),
+            deref: false,
+        });
+        moved.push(MovedTag {
+            name: t.short.clone(),
+            old: t.ref_oid,
+            new: new_target,
+            sig,
+        });
+    }
+    Ok((edits, moved))
+}
+
+/// Rebuild an annotated tag object onto `new_commit`, keeping name,
+/// tagger, and message verbatim; the signature is re-created (or
+/// dropped under `--no-sign`), mirroring commit re-signing.
+fn rebuild_tag(
+    repo: &gix::Repository,
+    t: &PlannedTag,
+    new_commit: ObjectId,
+    signer: Option<&Signer>,
+) -> Result<(ObjectId, TagSig), RedateError> {
+    let orig = repo.find_tag(t.ref_oid).map_err(write_err)?;
+    let decoded = orig.decode().map_err(write_err)?;
+    let mut tag = gix::objs::Tag::try_from(decoded).map_err(write_err)?;
+    tag.target = new_commit;
+    let mut had_sig = tag.pgp_signature.take().is_some();
+    // gix splits only PGP signature blocks out of the message; an SSH
+    // (or other) block stays embedded and must be stripped so the
+    // stale signature is not carried into the rebuilt tag.
+    if let Some(pos) = crate::sign::embedded_signature(tag.message.as_ref()) {
+        tag.message.truncate(pos.saturating_sub(1));
+        had_sig = true;
+    }
+
+    let sig = if had_sig {
+        match signer {
+            Some(s) => {
+                // Sign the payload as serialized WITHOUT the trailing
+                // signature (exactly what git signs), then store it.
+                let mut payload = Vec::with_capacity(tag.size() as usize);
+                tag.write_to(&mut payload)
+                    .map_err(|e| RedateError::Write(e.to_string()))?;
+                let armored = s
+                    .sign(&payload)
+                    .map_err(|e| RedateError::Signing(e.to_string()))?;
+                tag.pgp_signature = Some(armored.into());
+                TagSig::Resigned
+            }
+            None => TagSig::Dropped,
+        }
+    } else {
+        TagSig::Unsigned
+    };
+    let new_oid = repo.write_object(&tag).map_err(write_err)?.detach();
+    Ok((new_oid, sig))
 }
 
 /// Result of rebuilding the range's commit objects.
@@ -469,7 +589,15 @@ mod tests {
             true,
         );
         let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name), None).unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &[],
+            None,
+        )
+        .unwrap();
 
         assert_eq!(report.count, 3);
         assert_eq!(report.old_tip, old_tip);
@@ -493,7 +621,7 @@ mod tests {
 
         let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
         crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Detached, None).unwrap();
+        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Detached, &[], None).unwrap();
 
         assert_eq!(report.count, 1);
         let head_id = s.repo.head_id().unwrap().detach();
@@ -507,7 +635,15 @@ mod tests {
         let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
         set_ref(&s.repo, "refs/heads/main", old_tip);
         let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
-        let report = apply(&s.repo, &commits, old_tip, &RefTarget::Branch(name), None).unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &[],
+            None,
+        )
+        .unwrap();
         assert_eq!(report.count, 0);
         assert_eq!(report.new_tip, old_tip);
         let branch_tip = s
@@ -605,6 +741,303 @@ mod tests {
         assert_eq!(scan.tags[0].short, "inner");
         assert_eq!(scan.skipped.len(), 1);
         assert!(scan.skipped[0].contains("outer"));
+    }
+
+    // ---- tag rewriting ----
+
+    /// Write a signed annotated tag the same way git does: sign the
+    /// payload serialized without the signature, then append it.
+    fn write_signed_tag(
+        repo: &gix::Repository,
+        signer: &Signer,
+        name: &str,
+        target: ObjectId,
+    ) -> ObjectId {
+        let mut tag = gix::objs::Tag {
+            target,
+            target_kind: gix::objs::Kind::Commit,
+            name: name.into(),
+            tagger: Some(gix::actor::Signature {
+                name: "Tagger".into(),
+                email: "tag@example.com".into(),
+                time: gix::date::Time::new(1_700_000_000, 0),
+            }),
+            message: "a tag".into(),
+            pgp_signature: None,
+        };
+        let mut payload = Vec::new();
+        tag.write_to(&mut payload).unwrap();
+        let armored = signer.sign(&payload).unwrap();
+        tag.pgp_signature = Some(armored.into());
+        repo.write_object(&tag).unwrap().detach()
+    }
+
+    #[test]
+    fn apply_retargets_a_lightweight_tag() {
+        let s = scratch();
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c1 = parse_oid(&commits[1].original.id).unwrap();
+        set_ref(&s.repo, "refs/tags/v1", c1);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 05:00", 0).unwrap();
+        crate::model::set(&mut commits, 1, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.moved_tags.len(), 1);
+        let m = &report.moved_tags[0];
+        assert_eq!(m.name, "v1");
+        assert_eq!(m.old, c1);
+        assert_ne!(m.new, c1);
+        assert_eq!(m.sig, TagSig::Unsigned);
+        // The ref moved to the rewritten commit (the new tip's parent).
+        let tag_ref = s.repo.find_reference("refs/tags/v1").unwrap().id().detach();
+        assert_eq!(tag_ref, m.new);
+        let new_tip = s.repo.find_commit(report.new_tip).unwrap();
+        assert_eq!(new_tip.parent_ids().next().unwrap().detach(), m.new);
+    }
+
+    #[test]
+    fn apply_rebuilds_an_annotated_tag_keeping_tagger_and_message() {
+        let s = scratch();
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c2 = parse_oid(&commits[2].original.id).unwrap();
+        let tag_oid = write_tag_object(&s.repo, "v2", c2, gix::objs::Kind::Commit, None);
+        set_ref(&s.repo, "refs/tags/v2", tag_oid);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
+        crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            None,
+        )
+        .unwrap();
+
+        let m = &report.moved_tags[0];
+        assert_ne!(m.new, tag_oid);
+        let new_tag = s.repo.find_tag(m.new).unwrap();
+        let d = new_tag.decode().unwrap();
+        assert_eq!(d.name, "v2");
+        assert_eq!(d.target(), report.new_tip);
+        assert_eq!(d.message, "a tag");
+        // The tagger line is carried over verbatim (name, email, time).
+        assert_eq!(
+            d.tagger.unwrap(),
+            "Tagger <tag@example.com> 1700000000 +0000"
+        );
+        assert!(d.pgp_signature.is_none());
+        let tag_ref = s.repo.find_reference("refs/tags/v2").unwrap().id().detach();
+        assert_eq!(tag_ref, m.new);
+    }
+
+    #[test]
+    fn apply_leaves_tags_before_the_first_change() {
+        let s = scratch();
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c0 = parse_oid(&commits[0].original.id).unwrap();
+        set_ref(&s.repo, "refs/tags/v0", c0);
+
+        // Editing commit 1 rewrites 1 and 2; commit 0 keeps its id.
+        let new_time = datetime::parse_in_offset("2024-01-01 05:00", 0).unwrap();
+        crate::model::set(&mut commits, 1, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        assert_eq!(scan.tags.len(), 1);
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            None,
+        )
+        .unwrap();
+
+        assert!(report.moved_tags.is_empty());
+        let tag_ref = s.repo.find_reference("refs/tags/v0").unwrap().id().detach();
+        assert_eq!(tag_ref, c0);
+    }
+
+    #[test]
+    fn apply_noop_moves_no_tags() {
+        let s = scratch();
+        let commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        set_ref(&s.repo, "refs/tags/v1", old_tip);
+
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.count, 0);
+        assert!(report.moved_tags.is_empty());
+        let tag_ref = s.repo.find_reference("refs/tags/v1").unwrap().id().detach();
+        assert_eq!(tag_ref, old_tip);
+    }
+
+    #[test]
+    fn resigned_tag_carries_a_fresh_ssh_signature() {
+        let s = scratch();
+        let Some(signer) = ephemeral_ssh_signer(&s.dir.join("keys")) else {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        };
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c2 = parse_oid(&commits[2].original.id).unwrap();
+        let tag_oid = write_signed_tag(&s.repo, &signer, "vsig", c2);
+        set_ref(&s.repo, "refs/tags/vsig", tag_oid);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
+        crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        assert!(scan.tags[0].signed);
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            Some(&signer),
+        )
+        .unwrap();
+
+        let m = &report.moved_tags[0];
+        assert_eq!(m.sig, TagSig::Resigned);
+        // The commits were unsigned; the counters stay commit-only.
+        assert_eq!(report.resigned, 0);
+        let new_tag = s.repo.find_tag(m.new).unwrap();
+        let d = new_tag.decode().unwrap();
+        // gix parses SSH signature blocks back into the message; find
+        // the fresh signature there and the original message before it.
+        let pos =
+            crate::sign::embedded_signature(d.message).expect("re-signed tag keeps a signature");
+        assert!(d.message[pos..].starts_with(b"-----BEGIN SSH SIGNATURE-----"));
+        assert_eq!(&d.message[..pos - 1], "a tag");
+        assert_eq!(d.target(), report.new_tip);
+    }
+
+    #[test]
+    fn no_sign_drops_the_tag_signature() {
+        let s = scratch();
+        let Some(signer) = ephemeral_ssh_signer(&s.dir.join("keys")) else {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        };
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c2 = parse_oid(&commits[2].original.id).unwrap();
+        let tag_oid = write_signed_tag(&s.repo, &signer, "vsig", c2);
+        set_ref(&s.repo, "refs/tags/vsig", tag_oid);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
+        crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let report = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            None,
+        )
+        .unwrap();
+
+        let m = &report.moved_tags[0];
+        assert_eq!(m.sig, TagSig::Dropped);
+        assert_eq!(report.dropped_signatures, 0);
+        let new_tag = s.repo.find_tag(m.new).unwrap();
+        let d = new_tag.decode().unwrap();
+        assert!(d.pgp_signature.is_none());
+        // The stale signature was stripped, not carried in the message.
+        assert_eq!(d.message, "a tag");
+    }
+
+    #[test]
+    fn tag_signing_failure_aborts_before_any_ref_moves() {
+        let s = scratch();
+        let Some(signer) = ephemeral_ssh_signer(&s.dir.join("keys")) else {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        };
+        let mut commits = three_commits(&s.repo);
+        let old_tip = parse_oid(&commits.last().unwrap().original.id).unwrap();
+        set_ref(&s.repo, "refs/heads/main", old_tip);
+        let c2 = parse_oid(&commits[2].original.id).unwrap();
+        let tag_oid = write_signed_tag(&s.repo, &signer, "vsig", c2);
+        set_ref(&s.repo, "refs/tags/vsig", tag_oid);
+
+        let new_time = datetime::parse_in_offset("2024-01-01 09:00", 0).unwrap();
+        crate::model::set(&mut commits, 2, crate::model::Target::Both, new_time, false);
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        // The commits are unsigned, so only the tag re-sign invokes the
+        // (broken) signer.
+        let bad = Signer {
+            format: crate::sign::SignFormat::Ssh,
+            key: signer.key.clone(),
+            program: "no-such-signer-binary".into(),
+        };
+        let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+        let err = apply(
+            &s.repo,
+            &commits,
+            old_tip,
+            &RefTarget::Branch(name),
+            &scan.tags,
+            Some(&bad),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, RedateError::Signing(_)));
+        // Neither the branch nor the tag moved.
+        let branch = s
+            .repo
+            .find_reference("refs/heads/main")
+            .unwrap()
+            .id()
+            .detach();
+        assert_eq!(branch, old_tip);
+        let tag_ref = s
+            .repo
+            .find_reference("refs/tags/vsig")
+            .unwrap()
+            .id()
+            .detach();
+        assert_eq!(tag_ref, tag_oid);
     }
 
     // ---- re-signing ----
