@@ -34,7 +34,7 @@ This builds a `git-redate` binary; with it on your `PATH`, git runs
 ## Usage
 
 ```
-git redate [<revspec>] [-n <N>] [--root] [--dry-run] [--separate] [--mode <single|shift>] [--no-sign]
+git redate [<revspec>] [-n <N>] [--root] [--dry-run] [--separate] [--mode <single|shift>] [--no-sign] [--no-retag]
 ```
 
 ### Choosing commits
@@ -104,7 +104,12 @@ git config redate.mode shift    # make shift the default
 
 `--dry-run` writes nothing. In a terminal it opens the editor and prints
 the planned changes; in a script (no TTY) it previews the selected range
-- useful for validating a range or catching a merge.
+- useful for validating a range or catching a merge. Tags that would
+follow the rewrite are listed with their current target:
+
+```
+  tag v1.0 would move (currently 7c34e6f...)
+```
 
 ## Safety and undo
 
@@ -121,6 +126,31 @@ The branch/HEAD move also writes a reflog entry (`git reflog`,
 `branch@{1}`). Only dates change - file trees are untouched, so
 uncommitted changes are preserved.
 
+## Tags
+
+A rewritten commit gets a new id, so a tag pointing at it would be left
+behind on the old object - from the branch the tag looks like it
+disappeared and `git describe` breaks. git-redate **moves those tags
+onto the rewritten commits** by default (as `git filter-repo` does):
+
+```
+  moved tag v1.0: 7c34e6f... -> 5a87320...
+  moved tag v1.1: d3ebba8... -> a8b277b...  (re-signed)
+```
+
+- A lightweight tag is retargeted; an annotated tag is rebuilt onto the
+  new commit, keeping its name, tagger, and message.
+- Only tags whose commit is actually rewritten move (everything from the
+  first edited commit onward). Tags outside the range are untouched.
+- The branch and all tags move in one atomic ref transaction, each
+  guarded against a concurrent update.
+- Before the editor opens, a note on stderr says how many tags point
+  into the range; the write confirmation repeats the count.
+- **Undo:** `git reset --hard <old tip>` restores the branch but *not*
+  tags. Each report line carries the tag's old id, so restore one with
+  `git update-ref refs/tags/<name> <old id>`.
+- `--no-retag` leaves every tag pointing at the old commits.
+
 ## Signatures
 
 A commit's signature covers its dates, so changing a date invalidates
@@ -134,6 +164,10 @@ same SSH or OpenPGP key `git commit -S` would use. `git log
   rewrite aborts and nothing is written.
 - `--no-sign` drops signatures instead (the rewritten commits become
   unsigned).
+- A signed annotated tag that moves is re-signed the same way, so
+  `git verify-tag` stays Good; under `--no-sign` its signature is
+  dropped and the report says so. Tag signing failure also aborts the
+  rewrite, before any ref has moved.
 - SSH and OpenPGP are supported; x509/gpgsm is not (use `--no-sign`).
 
 ## Limitations (v1)
@@ -141,6 +175,8 @@ same SSH or OpenPGP key `git commit -S` would use. `git log
 - Linear history only (a merge in the range is refused).
 - The range must end at HEAD.
 - x509/gpgsm signatures cannot be re-created (use `--no-sign`).
+- A tag pointing at another tag is not rewritten (warned about on
+  stderr and left alone), and tags are never pushed for you.
 
 ## Development
 

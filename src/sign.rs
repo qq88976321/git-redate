@@ -1,11 +1,13 @@
-//! Producing a commit signature by shelling out to the configured
+//! Producing a commit or tag signature by shelling out to the configured
 //! signer, exactly as git's `gpg-interface.c` does. gitoxide bundles no
-//! crypto, so re-signing a rewritten commit means running `gpg` or
-//! `ssh-keygen` over the commit payload.
+//! crypto, so re-signing a rewritten commit or a moved tag means running
+//! `gpg` or `ssh-keygen` over its payload.
 //!
-//! The payload is the serialized commit content without the `gpgsig`
-//! header (see `crate::rewrite`); the armored signature this returns is
-//! stored back as that header.
+//! The payload is whatever git signs (see `crate::rewrite`): for a
+//! commit, its serialized content without the `gpgsig` header, which is
+//! where the armored signature goes back; for a tag, the serialized
+//! content up to and including the newline that ends the message, with
+//! the signature appended after it.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;

@@ -30,7 +30,7 @@ but this crate differs on purpose:
 
 - CLI parsing uses `clap` derive (herdr hand-rolls argv parsing with no
   clap dep) - the richer flag surface (revspec, -n, --root, --dry-run,
-  --separate, --mode) warrants it.
+  --separate, --mode, --no-sign, --no-retag) warrants it.
 - `jiff` is added for calendar-correct datetime + fixed-offset math
   (tzdb feature off; all editing is in each commit's own offset).
 - `crossterm` is used only via `ratatui::crossterm` (version locked to
@@ -63,14 +63,18 @@ just site-build / site-serve  # Zensical docs site (website/)
 - error.rs    thiserror RedateError
 - datetime.rs jiff parse/format/increment/delta; preserves offset
 - model.rs    Commit / EditableCommit; pure edit ops (single/shift
-              cascade, distribute, copy-from-previous, reset)
+              cascade, distribute, copy-from-previous, reset);
+              moved_tag_count
 - repo.rs     gix read: open, config_snapshot, resolve revspec/A..B/
-              --root, linear first-parent walk, merge abort
+              --root, linear first-parent walk, merge abort,
+              tags_in_range -> TagScan (PlannedTag + skipped warnings)
 - rewrite.rs  gix write: rebuild+write commit objects with parent
-              remap, re-sign or drop signatures, move ref + reflog,
-              dry-run, RewriteReport
+              remap, re-sign or drop signatures, rebuild/retarget tags,
+              move branch + tags in ONE ref transaction + reflog,
+              dry-run, RewriteReport (incl. moved_tags)
 - sign.rs     produce a signature by shelling out to gpg / ssh-keygen
-              (SignFormat, Signer::sign); no crypto in-crate
+              (SignFormat, Signer::sign, embedded_signature); no crypto
+              in-crate
 - app.rs      TUI state machine (App, Mode incl. Confirm, edit_mode);
               pure handle, no I/O
 - input.rs    KeyEvent -> Action (pure, context-aware keymap)
@@ -105,6 +109,22 @@ the terminal so it can be unit-tested directly.
   originally-signed commits are RE-signed via the repo's signing config
   (SSH/OpenPGP, through gpg/ssh-keygen). Signing failure aborts the
   rewrite; `--no-sign` drops signatures; x509/gpgsm is unsupported.
+  Payloads differ by object: a commit's is its serialization without the
+  gpgsig header; a tag's ends with the newline that terminates the
+  message (gix writes that newline itself, so rewrite.rs strips it from
+  the message and appends it to the signed bytes) - get this wrong and
+  git reports "incorrect signature".
+- Tags: tags pointing into the range move onto the rewritten commits by
+  default (`--no-retag` opts out). Lightweight = retarget, annotated =
+  rebuild keeping name/tagger/message, signed = re-signed. A tag moves
+  iff its commit index >= the first changed index, so the count is
+  computed live for the write-confirm line. Branch + tags move in one
+  atomic edit_references transaction (MustExistAndMatch each), after all
+  tag objects are written, so a signing failure moves nothing; no
+  reflog is forced for tag refs. Tag-of-tag chains and symbolic tag refs
+  are warned about on stderr and left alone. `git reset --hard` does not
+  restore tags, so the report prints each tag's old id plus the
+  `git update-ref` to undo it.
 - Keymap follows TUI conventions: Space expand, up/down (j/k) move
   between commits and, in an expanded row, step author<->committer,
   Tab/Shift-Tab (also s) toggle single/shift mode, u reset (U reset-all,
