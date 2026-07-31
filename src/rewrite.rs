@@ -188,21 +188,30 @@ fn rebuild_tag(
     tag.target = new_commit;
     let mut had_sig = tag.pgp_signature.take().is_some();
     // gix splits only PGP signature blocks out of the message; an SSH
-    // (or other) block stays embedded and must be stripped so the
-    // stale signature is not carried into the rebuilt tag.
+    // (or other) block stays embedded and must be stripped so the stale
+    // signature is not carried into the rebuilt tag. The newline that
+    // ended the message itself is kept, as git writes it.
     if let Some(pos) = crate::sign::embedded_signature(tag.message.as_ref()) {
-        tag.message.truncate(pos.saturating_sub(1));
+        tag.message.truncate(pos);
         had_sig = true;
     }
 
     let sig = if had_sig {
         match signer {
             Some(s) => {
-                // Sign the payload as serialized WITHOUT the trailing
-                // signature (exactly what git signs), then store it.
-                let mut payload = Vec::with_capacity(tag.size() as usize);
+                // git signs the tag bytes that precede the signature -
+                // the message-terminating newline included. gix writes
+                // that newline itself when a signature is present, so
+                // take it off the message and add it to the payload,
+                // leaving the signed bytes exactly what git verifies.
+                if tag.message.ends_with(b"\n") {
+                    let without_nl = tag.message.len() - 1;
+                    tag.message.truncate(without_nl);
+                }
+                let mut payload = Vec::with_capacity(tag.size() as usize + 1);
                 tag.write_to(&mut payload)
                     .map_err(|e| RedateError::Write(e.to_string()))?;
+                payload.push(b'\n');
                 let armored = s
                     .sign(&payload)
                     .map_err(|e| RedateError::Signing(e.to_string()))?;
@@ -745,8 +754,9 @@ mod tests {
 
     // ---- tag rewriting ----
 
-    /// Write a signed annotated tag the same way git does: sign the
-    /// payload serialized without the signature, then append it.
+    /// Write a signed annotated tag byte-for-byte the way git does: the
+    /// signed payload is everything up to and including the newline that
+    /// ends the message, and the armored signature follows it.
     fn write_signed_tag(
         repo: &gix::Repository,
         signer: &Signer,
@@ -767,9 +777,48 @@ mod tests {
         };
         let mut payload = Vec::new();
         tag.write_to(&mut payload).unwrap();
+        payload.push(b'\n');
         let armored = signer.sign(&payload).unwrap();
         tag.pgp_signature = Some(armored.into());
         repo.write_object(&tag).unwrap().detach()
+    }
+
+    /// Verify an object's embedded SSH signature the way git does: split
+    /// the raw object at the signature block, then check the signature
+    /// over everything before it (namespace `git`). Returns false when
+    /// the signature does not cover exactly those bytes.
+    fn ssh_signature_verifies(repo: &gix::Repository, oid: ObjectId, signer: &Signer) -> bool {
+        use std::process::{Command, Stdio};
+        let data = repo.find_object(oid).unwrap().data.clone();
+        let pos = crate::sign::embedded_signature(&data).expect("object carries a signature");
+        let (payload, signature) = data.split_at(pos);
+
+        let dir = std::path::Path::new(&signer.key).parent().unwrap();
+        let sig_file = dir.join("object.sig");
+        std::fs::write(&sig_file, signature).unwrap();
+        // allowed_signers takes `principal keytype keydata`; the public
+        // key file carries a trailing comment, so keep the first two
+        // fields only.
+        let pub_key = std::fs::read_to_string(format!("{}.pub", signer.key)).unwrap();
+        let mut fields = pub_key.split_whitespace();
+        let (ktype, kdata) = (fields.next().unwrap(), fields.next().unwrap());
+        let allowed = dir.join("allowed_signers");
+        std::fs::write(&allowed, format!("redate@test {ktype} {kdata}\n")).unwrap();
+
+        let mut child = Command::new("ssh-keygen")
+            .arg("-Y")
+            .arg("verify")
+            .arg("-f")
+            .arg(&allowed)
+            .args(["-I", "redate@test", "-n", "git", "-s"])
+            .arg(&sig_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), payload).unwrap();
+        child.wait().unwrap().success()
     }
 
     #[test]
@@ -947,6 +996,16 @@ mod tests {
         assert!(d.message[pos..].starts_with(b"-----BEGIN SSH SIGNATURE-----"));
         assert_eq!(&d.message[..pos - 1], "a tag");
         assert_eq!(d.target(), report.new_tip);
+        // The signature must cover exactly the bytes before it, or git
+        // rejects the tag ("incorrect signature").
+        assert!(
+            ssh_signature_verifies(&s.repo, tag_oid, &signer),
+            "the fixture must be signed the way git signs"
+        );
+        assert!(
+            ssh_signature_verifies(&s.repo, m.new, &signer),
+            "the re-signed tag must verify over its payload"
+        );
     }
 
     #[test]
@@ -983,8 +1042,9 @@ mod tests {
         let new_tag = s.repo.find_tag(m.new).unwrap();
         let d = new_tag.decode().unwrap();
         assert!(d.pgp_signature.is_none());
-        // The stale signature was stripped, not carried in the message.
-        assert_eq!(d.message, "a tag");
+        // The stale signature was stripped, not carried in the message,
+        // and the message keeps the newline git terminates it with.
+        assert_eq!(d.message, "a tag\n");
     }
 
     #[test]
