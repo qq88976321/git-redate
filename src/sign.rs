@@ -32,6 +32,37 @@ impl SignFormat {
     }
 }
 
+/// Signature block markers git recognizes at the end of a tag payload
+/// (`gpg-interface.c`).
+const SIGNATURE_MARKERS: [&[u8]; 4] = [
+    b"-----BEGIN PGP SIGNATURE-----",
+    b"-----BEGIN PGP MESSAGE-----",
+    b"-----BEGIN SSH SIGNATURE-----",
+    b"-----BEGIN SIGNED MESSAGE-----",
+];
+
+/// Byte offset where a signature block embedded in a tag message
+/// starts, if any. The block must begin at the start of a line, as in
+/// git. gix only splits PGP SIGNATURE blocks out of tag messages when
+/// decoding; SSH (and other) signature blocks stay inside the message,
+/// so callers must detect and strip them with this.
+pub fn embedded_signature(message: &[u8]) -> Option<usize> {
+    let line_starts = std::iter::once(0).chain(
+        message
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b == b'\n')
+            .map(|(i, _)| i + 1),
+    );
+    for start in line_starts {
+        let rest = &message[start..];
+        if SIGNATURE_MARKERS.iter().any(|m| rest.starts_with(m)) {
+            return Some(start);
+        }
+    }
+    None
+}
+
 /// A configured signer.
 #[derive(Debug, Clone)]
 pub struct Signer {
@@ -361,5 +392,22 @@ mod tests {
             "ssh-keygen -Y verify should accept our signature"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_signature_finds_blocks_at_line_starts() {
+        let at_start = b"-----BEGIN SSH SIGNATURE-----\nabc";
+        assert_eq!(embedded_signature(at_start), Some(0));
+
+        let after_msg = b"a tag\n-----BEGIN SSH SIGNATURE-----\nabc";
+        assert_eq!(embedded_signature(after_msg), Some(6));
+
+        let pgp = b"msg\n-----BEGIN PGP SIGNATURE-----\nabc";
+        assert_eq!(embedded_signature(pgp), Some(4));
+
+        assert_eq!(embedded_signature(b"no signature here"), None);
+        // Not at a line start: not a signature block.
+        let mid_line = b"see -----BEGIN SSH SIGNATURE----- for details";
+        assert_eq!(embedded_signature(mid_line), None);
     }
 }

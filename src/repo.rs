@@ -133,7 +133,13 @@ pub fn tags_in_range(repo: &gix::Repository, commits: &[Commit]) -> Result<TagSc
             gix::object::Kind::Tag => {
                 let decoded = obj.try_into_tag().map_err(|e| e.to_string()).and_then(|t| {
                     t.decode()
-                        .map(|d| (d.target(), d.target_kind, d.pgp_signature.is_some()))
+                        .map(|d| {
+                            // gix splits only PGP signature blocks out of
+                            // the message; SSH blocks stay embedded in it.
+                            let signed = d.pgp_signature.is_some()
+                                || crate::sign::embedded_signature(d.message).is_some();
+                            (d.target(), d.target_kind, signed)
+                        })
                         .map_err(|e| e.to_string())
                 });
                 let (target, target_kind, signed) = match decoded {
