@@ -519,6 +519,94 @@ mod tests {
         assert_eq!(branch_tip, old_tip);
     }
 
+    // ---- tag scan ----
+
+    /// The pristine `Commit`s of an editable range, as `repo::load`
+    /// would have returned them.
+    fn originals(commits: &[EditableCommit]) -> Vec<Commit> {
+        commits.iter().map(|e| e.original.clone()).collect()
+    }
+
+    /// Write an annotated tag object pointing at `target`.
+    fn write_tag_object(
+        repo: &gix::Repository,
+        name: &str,
+        target: ObjectId,
+        target_kind: gix::objs::Kind,
+        signature: Option<&[u8]>,
+    ) -> ObjectId {
+        let tag = gix::objs::Tag {
+            target,
+            target_kind,
+            name: name.into(),
+            tagger: Some(gix::actor::Signature {
+                name: "Tagger".into(),
+                email: "tag@example.com".into(),
+                time: gix::date::Time::new(1_700_000_000, 0),
+            }),
+            message: "a tag".into(),
+            pgp_signature: signature.map(|s| s.into()),
+        };
+        repo.write_object(&tag).unwrap().detach()
+    }
+
+    #[test]
+    fn scan_finds_lightweight_and_annotated_tags() {
+        let s = scratch();
+        let commits = three_commits(&s.repo);
+        let c0 = parse_oid(&commits[0].original.id).unwrap();
+        let c2 = parse_oid(&commits[2].original.id).unwrap();
+        set_ref(&s.repo, "refs/tags/light", c0);
+        let tag_oid = write_tag_object(&s.repo, "annot", c2, gix::objs::Kind::Commit, None);
+        set_ref(&s.repo, "refs/tags/annot", tag_oid);
+
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        assert!(scan.skipped.is_empty());
+        assert_eq!(scan.tags.len(), 2);
+        let annot = scan.tags.iter().find(|t| t.short == "annot").unwrap();
+        assert!(annot.annotated);
+        assert!(!annot.signed);
+        assert_eq!(annot.ref_oid, tag_oid);
+        assert_eq!(annot.commit, c2);
+        assert_eq!(annot.commit_index, 2);
+        let light = scan.tags.iter().find(|t| t.short == "light").unwrap();
+        assert!(!light.annotated);
+        assert_eq!(light.ref_oid, c0);
+        assert_eq!(light.commit, c0);
+        assert_eq!(light.commit_index, 0);
+    }
+
+    #[test]
+    fn scan_ignores_tags_outside_range() {
+        let s = scratch();
+        let commits = three_commits(&s.repo);
+        let tip = parse_oid(&commits[2].original.id).unwrap();
+        let tree = empty_tree(&s.repo);
+        let outside = write_test_commit(&s.repo, tree, vec![tip], 1_800_000_000, "outside");
+        set_ref(&s.repo, "refs/tags/outside", outside);
+
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        assert!(scan.tags.is_empty());
+        assert!(scan.skipped.is_empty());
+    }
+
+    #[test]
+    fn scan_skips_tag_of_tag_with_warning() {
+        let s = scratch();
+        let commits = three_commits(&s.repo);
+        let c1 = parse_oid(&commits[1].original.id).unwrap();
+        let inner = write_tag_object(&s.repo, "inner", c1, gix::objs::Kind::Commit, None);
+        set_ref(&s.repo, "refs/tags/inner", inner);
+        let outer = write_tag_object(&s.repo, "outer", inner, gix::objs::Kind::Tag, None);
+        set_ref(&s.repo, "refs/tags/outer", outer);
+
+        let scan = crate::repo::tags_in_range(&s.repo, &originals(&commits)).unwrap();
+        assert_eq!(scan.tags.len(), 1);
+        assert_eq!(scan.tags[0].short, "inner");
+        assert_eq!(scan.skipped.len(), 1);
+        assert!(scan.skipped[0].contains("outer"));
+    }
+
     // ---- re-signing ----
 
     fn ephemeral_ssh_signer(keydir: &std::path::Path) -> Option<Signer> {

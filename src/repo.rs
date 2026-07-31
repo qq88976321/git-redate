@@ -12,6 +12,7 @@ use crate::error::RedateError;
 use crate::model::Commit;
 use crate::sign::{SignFormat, Signer};
 use gix::ObjectId;
+use std::collections::HashMap;
 
 /// Where the rewritten tip should be written back.
 pub enum RefTarget {
@@ -32,6 +33,167 @@ pub struct Loaded {
     /// Whether the working tree has uncommitted changes (a notice only;
     /// trees are unchanged so the changes are preserved regardless).
     pub dirty: bool,
+}
+
+/// A tag under `refs/tags/*` whose peeled commit is inside the loaded
+/// range; the rewrite moves it onto the rewritten commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedTag {
+    /// Full ref name ("refs/tags/v1.0").
+    pub full_name: gix::refs::FullName,
+    /// Short display name ("v1.0").
+    pub short: String,
+    /// What the ref points at directly: the tag object (annotated) or
+    /// the commit itself (lightweight).
+    pub ref_oid: ObjectId,
+    /// The peeled commit inside the range.
+    pub commit: ObjectId,
+    /// Index of that commit in the oldest-first range.
+    pub commit_index: usize,
+    /// Annotated tag (a tag object) rather than a lightweight ref.
+    pub annotated: bool,
+    /// Annotated and carrying a PGP/SSH signature.
+    pub signed: bool,
+}
+
+/// Outcome of scanning `refs/tags/*` against the loaded range.
+#[derive(Debug, Default)]
+pub struct TagScan {
+    /// Tags that move with the commits they point at.
+    pub tags: Vec<PlannedTag>,
+    /// Warnings for tags left untouched (tag-of-tag chains, symbolic
+    /// refs, unreadable objects).
+    pub skipped: Vec<String>,
+}
+
+/// Scan `refs/tags/*` for tags pointing at commits of the loaded range
+/// (`commits` oldest-first). Tag-of-tag chains and symbolic refs that
+/// would be affected are reported in `skipped` and left alone; tags
+/// pointing outside the range are ignored silently.
+pub fn tags_in_range(repo: &gix::Repository, commits: &[Commit]) -> Result<TagScan, RedateError> {
+    let mut index: HashMap<ObjectId, usize> = HashMap::new();
+    for (i, c) in commits.iter().enumerate() {
+        let oid =
+            ObjectId::from_hex(c.id.as_bytes()).map_err(|e| RedateError::Write(e.to_string()))?;
+        index.insert(oid, i);
+    }
+
+    let mut scan = TagScan::default();
+    // Collect the refs first: classifying reads objects, which must not
+    // fight the iterator's borrow of the packed-refs buffer.
+    let platform = repo
+        .references()
+        .map_err(|e| RedateError::Write(e.to_string()))?;
+    let iter = platform
+        .tags()
+        .map_err(|e| RedateError::Write(e.to_string()))?;
+    let mut refs = Vec::new();
+    for r in iter {
+        match r {
+            Ok(r) => refs.push(r.detach()),
+            Err(e) => scan
+                .skipped
+                .push(format!("skipping an unreadable tag ref ({e})")),
+        }
+    }
+
+    for r in refs {
+        let short = r.name.shorten().to_string();
+        let ref_oid = match r.target {
+            gix::refs::Target::Object(oid) => oid,
+            gix::refs::Target::Symbolic(_) => {
+                scan.skipped
+                    .push(format!("tag '{short}' is a symbolic ref; leaving it alone"));
+                continue;
+            }
+        };
+        let obj = match repo.find_object(ref_oid) {
+            Ok(obj) => obj,
+            Err(e) => {
+                scan.skipped.push(format!(
+                    "tag '{short}' points at an unreadable object; leaving it alone ({e})"
+                ));
+                continue;
+            }
+        };
+        match obj.kind {
+            gix::object::Kind::Commit => {
+                if let Some(&i) = index.get(&ref_oid) {
+                    scan.tags.push(PlannedTag {
+                        full_name: r.name,
+                        short,
+                        ref_oid,
+                        commit: ref_oid,
+                        commit_index: i,
+                        annotated: false,
+                        signed: false,
+                    });
+                }
+            }
+            gix::object::Kind::Tag => {
+                let decoded = obj.try_into_tag().map_err(|e| e.to_string()).and_then(|t| {
+                    t.decode()
+                        .map(|d| (d.target(), d.target_kind, d.pgp_signature.is_some()))
+                        .map_err(|e| e.to_string())
+                });
+                let (target, target_kind, signed) = match decoded {
+                    Ok(v) => v,
+                    Err(e) => {
+                        scan.skipped.push(format!(
+                            "tag '{short}' cannot be decoded; leaving it alone ({e})"
+                        ));
+                        continue;
+                    }
+                };
+                match target_kind {
+                    gix::object::Kind::Commit => {
+                        if let Some(&i) = index.get(&target) {
+                            scan.tags.push(PlannedTag {
+                                full_name: r.name,
+                                short,
+                                ref_oid,
+                                commit: target,
+                                commit_index: i,
+                                annotated: true,
+                                signed,
+                            });
+                        }
+                    }
+                    gix::object::Kind::Tag => {
+                        // A tag-of-tag chain: only worth a warning when
+                        // it actually peels into the range.
+                        if peel_tag_chain(repo, target)
+                            .is_some_and(|commit| index.contains_key(&commit))
+                        {
+                            scan.skipped.push(format!(
+                                "tag '{short}' points at another tag; \
+                                 tag chains are not rewritten, leaving it alone"
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(scan)
+}
+
+/// Follow a tag-of-tag chain (bounded) down to the commit it ultimately
+/// points at, if any.
+fn peel_tag_chain(repo: &gix::Repository, mut oid: ObjectId) -> Option<ObjectId> {
+    for _ in 0..10 {
+        let obj = repo.find_object(oid).ok()?;
+        match obj.kind {
+            gix::object::Kind::Commit => return Some(oid),
+            gix::object::Kind::Tag => {
+                oid = obj.try_into_tag().ok()?.target_id().ok()?.detach();
+            }
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Discover the repository containing the current directory.
