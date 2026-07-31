@@ -48,7 +48,13 @@ fn run() -> Result<ExitCode> {
         .into_iter()
         .map(EditableCommit::new)
         .collect();
-    let mut app = App::new(editable, effective.mode, cli.dry_run, cli.separate);
+    let mut app = App::new(
+        editable,
+        effective.mode,
+        cli.dry_run,
+        cli.separate,
+        Vec::new(),
+    );
 
     if cli.dry_run {
         // Edit interactively when possible, then print the plan without

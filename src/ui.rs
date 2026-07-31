@@ -269,10 +269,21 @@ fn status_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                     Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
                 ),
             };
-            vec![Line::from(vec![
+            let mut lines = vec![Line::from(vec![
                 Span::styled(prompt, style),
                 Span::styled("   [y] yes    [n/Esc] no", dim),
-            ])]
+            ])];
+            // Moving tags is part of the write: say so before the user
+            // commits to it. At most one extra line, so the footer stays
+            // within its clamp.
+            let tags = app.moved_tag_count();
+            if matches!(kind, ConfirmKind::Write) && tags > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("{tags} tag(s) will be moved"),
+                    Style::default().fg(CAUTION),
+                )));
+            }
+            lines
         }
         Mode::Search { editor } => {
             let (before, at, after) = cursor_split(editor.text(), editor.cursor());
@@ -520,7 +531,7 @@ mod tests {
                 })
             })
             .collect();
-        App::new(commits, EditMode::Single, false, false)
+        App::new(commits, EditMode::Single, false, false, Vec::new())
     }
 
     fn rendered(app: &App) -> String {
@@ -583,6 +594,23 @@ mod tests {
         let content = rendered(&a);
         assert!(content.contains("rewrite 1 commit"));
         assert!(content.contains("[y] yes"));
+    }
+
+    #[test]
+    fn write_confirm_lists_tag_moves() {
+        let mut a = app();
+        // A tag on the older commit; editing it moves the tag.
+        a.tag_commit_indices = vec![0];
+        a.mode = Mode::Confirm {
+            kind: ConfirmKind::Write,
+        };
+        // No edits yet: nothing moves, so no extra line.
+        assert!(!rendered(&a).contains("tag(s) will be moved"));
+
+        a.commits[0].author = parse_in_offset("2024-02-02 02:00", 0).unwrap();
+        let content = rendered(&a);
+        assert!(content.contains("rewrite 1 commit"));
+        assert!(content.contains("1 tag(s) will be moved"));
     }
 
     #[test]

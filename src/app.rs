@@ -87,6 +87,9 @@ pub struct App {
     pub show_help: bool,
     pub quit: bool,
     pub write_requested: bool,
+    /// Indices into `commits` of the commits a tag points at, so the
+    /// write confirmation can say how many tags the edits would move.
+    pub tag_commit_indices: Vec<usize>,
     /// Undo/redo history of timestamp edits (most recent on top).
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
@@ -103,6 +106,7 @@ impl App {
         edit_mode: EditMode,
         dry_run: bool,
         separate: bool,
+        tag_commit_indices: Vec<usize>,
     ) -> Self {
         let mut app = App {
             commits,
@@ -116,6 +120,7 @@ impl App {
             show_help: false,
             quit: false,
             write_requested: false,
+            tag_commit_indices,
             undo: Vec::new(),
             redo: Vec::new(),
             search_query: None,
@@ -131,6 +136,11 @@ impl App {
 
     pub fn is_editing(&self) -> bool {
         matches!(self.mode, Mode::Editing { .. })
+    }
+
+    /// How many tags the pending edits would move.
+    pub fn moved_tag_count(&self) -> usize {
+        crate::model::moved_tag_count(&self.commits, &self.tag_commit_indices)
     }
 
     /// The input keymap that applies to the current mode. The help panel
@@ -603,7 +613,7 @@ mod tests {
                 })
             })
             .collect();
-        App::new(commits, mode, false, false)
+        App::new(commits, mode, false, false, Vec::new())
     }
 
     fn wall(app: &App, i: usize) -> String {
