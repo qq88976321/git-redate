@@ -73,6 +73,10 @@ pub struct Cli {
     /// Drop GPG/SSH signatures instead of re-signing rewritten commits.
     #[arg(long)]
     pub no_sign: bool,
+
+    /// Leave tags pointing at the old commits instead of moving them.
+    #[arg(long)]
+    pub no_retag: bool,
 }
 
 /// An abstract range to resolve against a repository. Exactly one of
@@ -256,5 +260,11 @@ mod tests {
         let c = cli(&["--dry-run", "--separate"]);
         assert!(c.dry_run);
         assert!(c.separate);
+    }
+
+    #[test]
+    fn no_retag_flag() {
+        assert!(!cli(&[]).no_retag);
+        assert!(cli(&["--no-retag"]).no_retag);
     }
 }
