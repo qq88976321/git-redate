@@ -22,7 +22,9 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Let an in-flight deployment finish: cancelling one mid-flight fails the
+  # `actions/deploy-pages` step rather than superseding it cleanly.
+  cancel-in-progress: false
 
 jobs:
   deploy:
