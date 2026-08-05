@@ -413,6 +413,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let repo = gix::init(&dir).unwrap();
+
+        // Writing a reflog entry needs a committer identity, which gix
+        // resolves from config. Without one here the ref transaction fails
+        // with MissingCommitter, so the repo has to carry its own identity
+        // rather than borrow whatever the machine has in ~/.gitconfig -
+        // otherwise these tests pass locally and fail on a CI runner, which
+        // has no global git identity.
+        let config = repo.git_dir().join("config");
+        let mut text = std::fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = Tester\n\temail = test@example.com\n");
+        std::fs::write(&config, text).unwrap();
+        let repo = gix::open(&dir).unwrap();
+
         Scratch { dir, repo }
     }
 
