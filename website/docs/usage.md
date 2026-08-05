@@ -154,3 +154,7 @@ your repository's signing config - the same `gpg.format` /
 - x509/gpgsm signatures cannot be re-created (use `--no-sign`).
 - A tag pointing at another tag is not rewritten, and tags are never
   pushed for you.
+- A committer identity must be configured (`user.name` and
+  `user.email`) - the reflog entry needs one. git derives one from the
+  system instead; git-redate refuses before the editor opens rather
+  than invent an identity.

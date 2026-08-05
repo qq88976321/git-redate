@@ -208,6 +208,28 @@ pub fn open() -> Result<gix::Repository, RedateError> {
     gix::discover(".").map_err(|e| RedateError::NotARepo(e.to_string()))
 }
 
+/// Fail unless a committer identity is configured.
+///
+/// `rewrite::apply` moves the ref with a forced reflog entry, and gix
+/// hands the transaction `Repository::committer()`, which is `None` when
+/// neither `committer.*` nor `user.*` supplies both a name and an email.
+/// The transaction then fails with `MissingCommitter` - after the editor
+/// has closed, so the user's edits are lost. Checking up front turns that
+/// into an actionable message before the editor opens.
+///
+/// git itself is more lenient here: it derives an identity from the system
+/// for reflog entries. Refusing is the deliberate choice - this tool exists
+/// to control who and when, so it does not invent an identity.
+///
+/// A configured but unparsable `gitoxide.commit.committerDate` is left to
+/// the write path, which reports the config error itself.
+pub fn require_committer_identity(repo: &gix::Repository) -> Result<(), RedateError> {
+    if repo.committer().is_none() {
+        return Err(RedateError::NoCommitterIdentity);
+    }
+    Ok(())
+}
+
 /// The raw `redate.mode` git config value, if set.
 pub fn config_edit_mode(repo: &gix::Repository) -> Option<String> {
     repo.config_snapshot()
@@ -448,6 +470,46 @@ mod tests {
     fn single_commit_repo_takes_the_root() {
         let got = walk_linear(0, None, Some(10), linear(&[(0, vec![])])).unwrap();
         assert_eq!(got, vec![0]);
+    }
+
+    /// Open ignoring system/user/env config, so identity assertions do not
+    /// depend on whether whoever runs the tests has a ~/.gitconfig.
+    fn open_isolated(dir: &std::path::Path) -> gix::Repository {
+        gix::open_opts(dir, gix::open::Options::isolated()).unwrap()
+    }
+
+    fn cfg_scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("git-redate-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        gix::init(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn require_committer_identity_errors_when_nothing_is_configured() {
+        let dir = cfg_scratch("id-none");
+        let repo = open_isolated(&dir);
+        assert!(require_committer_identity(&repo).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn require_committer_identity_accepts_a_repo_local_identity() {
+        let dir = cfg_scratch("id-local");
+        let cfg = dir.join(".git/config");
+        let mut text = std::fs::read_to_string(&cfg).unwrap_or_default();
+        text.push_str("[user]\n\tname = Tester\n\temail = test@example.com\n");
+        std::fs::write(&cfg, text).unwrap();
+        let repo = open_isolated(&dir);
+        assert!(require_committer_identity(&repo).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_identity_error_names_the_config_keys() {
+        let msg = RedateError::NoCommitterIdentity.to_string();
+        assert!(msg.contains("user.name"));
+        assert!(msg.contains("user.email"));
     }
 
     #[test]

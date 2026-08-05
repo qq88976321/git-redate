@@ -222,6 +222,10 @@ same SSH or OpenPGP key `git commit -S` would use. `git log
 - x509/gpgsm signatures cannot be re-created (use `--no-sign`).
 - A tag pointing at another tag is not rewritten (warned about on
   stderr and left alone), and tags are never pushed for you.
+- A committer identity must be configured (`user.name` and
+  `user.email`): the reflog entry the rewrite writes needs one. git
+  derives one from the system instead; git-redate refuses rather than
+  invent an identity, and says so before the editor opens.
 
 ## Development
 

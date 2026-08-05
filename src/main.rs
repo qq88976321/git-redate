@@ -89,6 +89,11 @@ fn run() -> Result<ExitCode> {
         return Err(RedateError::NotATty.into());
     }
 
+    // The ref move writes a reflog entry, which needs a committer identity.
+    // Check before the editor opens: the write happens after it closes, so
+    // failing there would throw away everything the user just edited.
+    repo::require_committer_identity(&repository)?;
+
     run_tui(&mut app).context("running the editor")?;
     if !app.write_requested {
         println!("git-redate: cancelled; nothing written");

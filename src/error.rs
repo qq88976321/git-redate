@@ -48,6 +48,15 @@ pub enum RedateError {
     #[error("git-redate needs an interactive terminal (use --dry-run in scripts)")]
     NotATty,
 
+    /// Neither `committer.*` nor `user.*` supplies a name and email, so
+    /// the reflog entry the rewrite writes cannot be attributed.
+    #[error(
+        "no committer identity configured; the reflog entry cannot be written.\n  \
+         git config --global user.name \"Your Name\"\n  \
+         git config --global user.email you@example.com"
+    )]
+    NoCommitterIdentity,
+
     /// Writing objects or moving the ref failed.
     #[error("failed to rewrite history: {0}")]
     Write(String),
