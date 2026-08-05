@@ -165,17 +165,18 @@ pub fn tags_in_range(repo: &gix::Repository, commits: &[Commit]) -> Result<TagSc
                             });
                         }
                     }
-                    gix::object::Kind::Tag => {
-                        // A tag-of-tag chain: only worth a warning when
-                        // it actually peels into the range.
+                    // A tag-of-tag chain: only worth a warning when it
+                    // actually peels into the range. A chain that does not
+                    // falls through to the catch-all arm below, which is
+                    // what an untaken `if` inside this arm did before.
+                    gix::object::Kind::Tag
                         if peel_tag_chain(repo, target)
-                            .is_some_and(|commit| index.contains_key(&commit))
-                        {
-                            scan.skipped.push(format!(
-                                "tag '{short}' points at another tag; \
-                                 tag chains are not rewritten, leaving it alone"
-                            ));
-                        }
+                            .is_some_and(|commit| index.contains_key(&commit)) =>
+                    {
+                        scan.skipped.push(format!(
+                            "tag '{short}' points at another tag; \
+                             tag chains are not rewritten, leaving it alone"
+                        ));
                     }
                     _ => {}
                 }

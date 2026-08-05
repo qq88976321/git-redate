@@ -15,7 +15,7 @@ Workspace-wide procedure (routing, checklists, commit rules) comes from
   `master` (cargo-release `allow-branch = ["master"]`). First release
   is cut with `just release 0.1.0` so the first tag is v0.1.0 (explicit
   version, not a patch bump). Releases are USER-ONLY.
-- Toolchain: `cargo`/rustc 1.94 locally. Rust edition 2021, but
+- Toolchain: `cargo`/rustc 1.97.1 locally. Rust edition 2021, but
   MSRV = 1.85 (gitoxide gix 0.85 sets the floor). The CI msrv job stays
   commented until a 1.85 build is verified.
 - Dependencies (do not add more without user confirmation):
