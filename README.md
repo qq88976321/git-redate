@@ -8,6 +8,18 @@ shelling out to `git`.
 
 Docs site: <https://qq88976321.github.io/git-redate/>.
 
+<!-- github.com will NOT play a repo-relative <video>, and user-attachment
+URLs need a manual re-upload on every re-render, so the README embeds a
+committed GIF derived from the mp4 (regenerate with `just demo`; see
+docs/demo-recording.md). The crisp mp4 plays inline on the docs site. -->
+![git-redate demo](demo/redate.gif)
+
+Five commits made between 02:11 and 03:40: shift mode moves the whole
+run three hours, single mode nudges the last one on its own, and
+expanding it pulls the committer date back from the author date. The
+write reports the old tip, the undo command, and the tag that followed
+its commit.
+
 ## Why
 
 The original `git-redate` opens a plain text file in `$EDITOR` and
@@ -234,7 +246,13 @@ just gate     # fmt --check, clippy -D warnings, test, release build
 just test     # unit tests
 just build    # debug build
 just run -- --dry-run HEAD~5
+just demo     # re-record the demo (docker + vhs)
 ```
+
+The demo above is scripted in [demo/redate.tape](demo/redate.tape) as a
+vhs tape rendered to mp4, with `just gifs` deriving the README's inline
+GIF, so both regenerate after any UI change - see
+[docs/demo-recording.md](docs/demo-recording.md).
 
 Docs live in `website/` and build with `just site-build` (Zensical).
 Releases are cut with `just release` (cargo-release + git-cliff); the

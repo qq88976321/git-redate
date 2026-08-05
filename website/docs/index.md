@@ -27,6 +27,17 @@ A checksum-verified prebuilt binary for Linux and macOS, installed into
 `~/.local/bin` without `sudo`. See [Install](install.md) for the flags,
 the platform list, and building from source.
 
+## Demo
+
+<figure>
+  <figcaption>Five commits made between 02:11 and 03:40: shift mode moves
+  the whole run three hours, single mode nudges the last one on its own,
+  and expanding it pulls the committer date back from the author date.
+  The write reports the old tip, the undo command, and the tag that
+  followed its commit.</figcaption>
+  <video src="demo/redate.mp4" controls preload="metadata" width="100%"></video>
+</figure>
+
 ## At a glance
 
 ```
