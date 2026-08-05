@@ -54,3 +54,18 @@ rebuilt and re-signed), so they do not stay behind on the old objects;
 - x509/gpgsm signatures cannot be re-created (use `--no-sign`).
 - A tag pointing at another tag is not rewritten (it is reported and
   left alone), and tags are never pushed for you.
+
+## Status
+
+!!! note "Personal tool, built with heavy AI assistance (Claude Code)"
+
+    I review what ships and use it on my own repositories, but it comes
+    with no warranty and no support commitment: issues and PRs are welcome
+    and may still go unanswered.
+
+    It rewrites history: preview with `--dry-run` first, keep the old tip
+    the report prints, and do not point it at a branch other people have
+    already pulled.
+
+Source on [GitHub](https://github.com/qq88976321/git-redate),
+[MIT licensed](https://github.com/qq88976321/git-redate/blob/master/LICENSE).

@@ -6,6 +6,8 @@ from a terminal UI, then rewrite history in place. Written in Rust,
 powered by [gitoxide](https://github.com/GitoxideLabs/gitoxide) - no
 shelling out to `git`.
 
+Docs site: <https://qq88976321.github.io/git-redate/>.
+
 ## Why
 
 The original `git-redate` opens a plain text file in `$EDITOR` and
@@ -21,6 +23,17 @@ makes it:
   commit objects directly with gitoxide (no `git`/`libgit2` at runtime).
 - **Safe** - a reflog entry and a printed `git reset --hard` undo
   command on every write, plus a `--dry-run` preview.
+
+## Status
+
+Personal tool, built with heavy AI assistance (Claude Code). I review
+what ships and use it on my own repositories, but it comes with no
+warranty and no support commitment: issues and PRs are welcome and may
+still go unanswered.
+
+It rewrites history, so treat it accordingly: preview with `--dry-run`
+first, keep the old tip the report prints, and do not point it at a
+branch other people have already pulled.
 
 ## Install
 
