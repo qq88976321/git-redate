@@ -124,7 +124,12 @@ the terminal so it can be unit-tested directly.
   history only).
 - Safety: reflog written on ref move; old tip SHA printed for undo;
   `--dry-run` writes nothing; a dirty worktree is only a notice (trees
-  are unchanged, so uncommitted changes are preserved).
+  are unchanged, so uncommitted changes are preserved). That reflog needs
+  a committer, so `repo::require_committer_identity` (the same
+  `Repository::committer()` gix hands the ref transaction) runs BEFORE the
+  editor opens - failing at write time would discard the user's edits.
+  git derives a system identity for reflogs instead; refusing is
+  deliberate.
 - Signatures: a date change invalidates a commit's signature, so
   originally-signed commits are RE-signed via the repo's signing config
   (SSH/OpenPGP, through gpg/ssh-keygen). Signing failure aborts the
@@ -183,6 +188,14 @@ path. Unit tests (`just test`) cover the pure logic and thin gix I/O
 against scratch repositories built in a tempdir (no dev-dependencies,
 mirroring herdr). To drive the real TUI, build and run it in a throwaway
 git repository in a real terminal (see README / plan verification).
+
+Tests MUST NOT depend on the machine's git config. A scratch repo that
+gets written to needs its own `user.name`/`user.email` (see
+`rewrite::tests::scratch`), and a test asserting the ABSENCE of config
+must open with `gix::open::Options::isolated()` (see
+`repo::tests::open_isolated`). Skipping this is invisible locally and
+fails the ci test job, which runs with no global git identity: that
+exact mistake cost 13 red tests on the first push.
 
 ## Conventions
 
