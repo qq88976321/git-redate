@@ -21,7 +21,11 @@ Workspace-wide procedure (routing, checklists, commit rules) comes from
 - Dependencies (do not add more without user confirmation):
   gix, ratatui, clap (derive), jiff, anyhow, thiserror. Dev tools
   installed out-of-band (NOT Cargo deps): cargo-release, git-cliff
-  (CHANGELOG.md, config in cliff.toml), Zensical (docs, via uvx).
+  (CHANGELOG.md, config in cliff.toml), Zensical (docs, via uvx),
+  shellcheck (install.sh).
+- The publish chain (create the public repo, push, switch the Pages
+  source to "GitHub Actions", push the first tag) is documented in
+  `docs/releasing.md` and is USER-ONLY.
 
 ## Deliberate divergences from herdr-copy-search conventions
 
@@ -45,6 +49,12 @@ just gate      # THE quality gate: fmt --check, clippy -D warnings,
                #   commit; all four must pass.
 just build     # debug build
 just test      # unit tests only
+just lint-sh   # shellcheck install.sh + scripts/test-install.sh.
+               #   Deliberately NOT part of `gate` (would silently skip
+               #   where shellcheck is missing); CI enforces it.
+just test-install # offline install.sh round trip against a fake
+                  #   release tree over file://. Needs
+                  #   `rustup target add x86_64-unknown-linux-musl`.
 just run -- ARGS  # run the binary against the current repo, e.g.
                   #   `just run -- --dry-run HEAD~5`
 just release LEVEL # cargo-release: gate, bump, regen CHANGELOG.md,
@@ -83,6 +93,16 @@ just site-build / site-serve  # Zensical docs site (website/)
 Pure logic (datetime, model, cli::normalize, config, walk_linear,
 remap_parents, sign format/argv helpers) is kept independent of gix and
 the terminal so it can be unit-tested directly.
+
+## Distribution files (outside src/)
+
+- install.sh              POSIX sh installer, published as an asset of
+                          every release; all logic inside main() so a
+                          truncated download cannot half-execute
+- scripts/test-install.sh offline round trip: builds the musl asset,
+                          fakes a release tree, drives install.sh over
+                          file://
+- docs/releasing.md       maintainer runbook (USER-ONLY steps included)
 
 ## Design decisions (see docs/superpowers spec / plan for rationale)
 
@@ -133,6 +153,27 @@ the terminal so it can be unit-tested directly.
   q/Q/Esc quit (confirm/force), Ctrl-C abort. The footer packs tiered
   hints into up to two rows; the ? help panel is the full list and Esc
   closes it.
+- Distribution: install.sh is hosted as a RELEASE ASSET
+  (`releases/latest/download/install.sh`), not from raw.githubusercontent
+  or Pages, so the installer a user runs can never drift ahead of the
+  assets it knows how to name. It resolves "latest" at runtime via the
+  `releases/latest` redirect (no REST API, no rate limit); `--version`
+  pins the binary, a pinned asset URL pins the script.
+- Linux release binaries target MUSL ONLY (x86_64 + aarch64), so one
+  build per arch runs on any distribution. Do NOT switch back to
+  `*-linux-gnu`: on ubuntu-latest that pins the glibc floor to the
+  runner image (2.39), which silently breaks Debian 12 / Ubuntu 22.04
+  users. Statically linking glibc is not an option either - Rust's
+  static-CRT support covers musl and windows-msvc, not `*-linux-gnu`.
+  If musl ever fails to build, the fallback is cargo-zigbuild with
+  `x86_64-unknown-linux-gnu.2.17`, not plain gnu.
+- install.sh hardcodes the asset contract: `git-redate-<target>.tar.gz`
+  with the binary at the archive root, plus a sidecar named
+  `git-redate-<target>.sha256` (NOT `...tar.gz.sha256`) whose line names
+  the tarball with no path. Changing release.yml's matrix, archive name,
+  or checksum algorithm means changing install.sh and both platform
+  tables (README, website/docs/install.md); `just test-install` catches
+  the drift without cutting a release.
 
 ## Manual / driving tests
 
