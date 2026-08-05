@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 The format is based on Keep a Changelog, and this project adheres to
 Conventional Commits.
 
+## [0.1.1] - 2026-08-05
+
+### Features
+
+- **repo**: Refuse to start without a committer identity
+
+### Bug Fixes
+
+- **rewrite**: Give the test scratch repo its own git identity
+
+### Documentation
+
+- Disclose that this is a personal, AI-assisted tool
+- Record the identity guard and test hermeticity rule
+- **demo**: Script the demo recording with vhs
+- **demo**: Record the demo and embed it in README and docs
+
 ## [0.1.0] - 2026-08-05
 
 ### Features
