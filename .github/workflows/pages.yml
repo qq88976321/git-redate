@@ -1,4 +1,5 @@
 # GitHub Pages: build the Zensical docs site in website/ and deploy it.
+# The demo video is single-source in demo/ and copied into the build.
 #
 # ONE-TIME MANUAL STEP (repo owner): GitHub -> Settings -> Pages ->
 # Build and deployment -> Source: "GitHub Actions".
@@ -12,6 +13,7 @@ on:
     branches: [master]
     paths:
       - "website/**"
+      - "demo/*.mp4"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -40,6 +42,10 @@ jobs:
           python-version: 3.x
       # Pinned; keep in lockstep with the `zensical` version in justfile.
       - run: pip install zensical==0.0.47
+      - name: Copy the demo video into the site sources
+        run: |
+          mkdir -p website/docs/demo
+          cp demo/redate.mp4 website/docs/demo/
       - name: Build the site
         working-directory: website
         run: zensical build --clean

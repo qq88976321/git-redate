@@ -1,4 +1,6 @@
 /target
 
-# Zensical docs site (website/): build output.
+# Zensical docs site (website/): build output, and the demo video the
+# build/deploy copies in from demo/ (kept single-source in demo/).
 /website/site/
+/website/docs/demo/

@@ -49,9 +49,10 @@ just gate      # THE quality gate: fmt --check, clippy -D warnings,
                #   commit; all four must pass.
 just build     # debug build
 just test      # unit tests only
-just lint-sh   # shellcheck install.sh + scripts/test-install.sh.
-               #   Deliberately NOT part of `gate` (would silently skip
-               #   where shellcheck is missing); CI enforces it.
+just lint-sh   # shellcheck install.sh, scripts/test-install.sh and
+               #   demo/*.sh. Deliberately NOT part of `gate` (would
+               #   silently skip where shellcheck is missing); CI
+               #   enforces it.
 just test-install # offline install.sh round trip against a fake
                   #   release tree over file://. Needs
                   #   `rustup target add x86_64-unknown-linux-musl`.
@@ -59,6 +60,10 @@ just run -- ARGS  # run the binary against the current repo, e.g.
                   #   `just run -- --dry-run HEAD~5`
 just release LEVEL # cargo-release: gate, bump, regen CHANGELOG.md,
                    #   commit, tag. USER-ONLY. First release: 0.1.0.
+just demo      # re-record the demo: build the musl binary, drive
+               #   demo/redate.tape with vhs in docker, derive the GIF.
+               #   Needs docker and the musl target; SANDBOX OFF.
+just gifs      # only the mp4 -> GIF step
 just site-build / site-serve  # Zensical docs site (website/)
 ```
 
@@ -103,6 +108,32 @@ the terminal so it can be unit-tested directly.
                           fakes a release tree, drives install.sh over
                           file://
 - docs/releasing.md       maintainer runbook (USER-ONLY steps included)
+- demo/redate.tape        vhs tape: every keystroke of the demo, so it
+                          can be re-recorded with no human at a terminal
+- demo/make-demo-repo.sh  builds the throwaway repo the tape edits
+                          (pinned identity/dates -> stable commit ids);
+                          rebuilt every render, since the demo rewrites
+                          it
+- demo/Dockerfile         upstream vhs image + git (the image has ttyd +
+                          ffmpeg but no git, and the demo needs it to
+                          build the fixture AND to run `git redate` as a
+                          subcommand)
+- demo/mp4-to-gif.sh      mp4 -> README GIF, run inside that image
+- docs/demo-recording.md  demo runbook + acceptance criteria
+
+## Demo asset contract
+
+`demo/redate.mp4` is the single source of truth (docs site, via a copy
+into the gitignored `website/docs/demo/` made by `just site-build` and
+`pages.yml`); `demo/redate.gif` is derived from it for the README,
+because github.com will not play a repo-relative `<video>`. The 106x18
+grid in the tape is not arbitrary: 106 columns is the narrowest that
+keeps the report's `moved tag <old> -> <new>` line unwrapped.
+
+ANY change to the TUI's rendering, keybindings, report text, or the
+fixture MUST re-record the demo in the same branch (`just demo`), per
+docs/demo-recording.md. A demo showing a UI the tool no longer has is
+worse than no demo.
 
 ## Design decisions (see docs/superpowers spec / plan for rationale)
 

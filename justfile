@@ -4,6 +4,9 @@
 # Pinned because Zensical is pre-1.0; bump this single line to upgrade.
 zensical := "zensical@0.0.47"
 
+# Demo rendering image: upstream vhs + git, built from demo/Dockerfile.
+vhs_image := "git-redate-vhs:local"
+
 # List available recipes.
 default:
     @just --list
@@ -34,7 +37,7 @@ test:
 # Enforced in CI; kept out of `gate` so the gate does not silently
 # skip a step on a machine without shellcheck.
 lint-sh:
-    shellcheck -s sh install.sh scripts/test-install.sh
+    shellcheck -s sh install.sh scripts/test-install.sh demo/make-demo-repo.sh demo/mp4-to-gif.sh
 
 # End-to-end round trip for install.sh against a fake release tree
 # served over file://. Builds the musl asset first, so it needs
@@ -69,11 +72,45 @@ run *args:
 release level="patch":
     cargo release {{level}} --execute
 
-# Build the docs site (website/, Zensical). Runs Zensical via uvx;
-# needs uv on PATH (no venv to activate).
+# Build the rendering image (upstream vhs + git). Cached after the
+# first run; rebuild only when demo/Dockerfile changes.
+demo-image:
+    docker build -t {{vhs_image}} demo
+
+# Re-record the demo: build the static binary, drive demo/redate.tape
+# with vhs in docker, then derive the README GIF. The full runbook and
+# the acceptance criteria live in docs/demo-recording.md. Needs docker
+# and `rustup target add x86_64-unknown-linux-musl`; run with the
+# sandbox off (image pull + docker.sock). Kept out of `gate`: it takes
+# minutes and needs docker.
+demo: demo-image
+    cargo build --release --target x86_64-unknown-linux-musl
+    docker run --rm --user "$(id -u):$(id -g)" \
+      -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp/run \
+      -v "$PWD":/vhs \
+      -v "$PWD/target/x86_64-unknown-linux-musl/release/git-redate":/usr/local/bin/git-redate:ro \
+      --entrypoint sh {{vhs_image}} \
+      -c 'mkdir -p /tmp/run && vhs demo/redate.tape'
+    just gifs
+
+# Derive the small looping GIF (demo/redate.gif) from the demo mp4 for
+# inline playback in the GitHub README (github.com will not play a
+# repo-relative <video>). Uses the image's ffmpeg (no native ffmpeg on
+# the host). Rerun after regenerating the mp4.
+gifs:
+    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+      -v "$PWD/demo":/demo \
+      --entrypoint sh {{vhs_image}} /demo/mp4-to-gif.sh
+
+# Build the docs site (website/, Zensical) with the demo video copied
+# in. Runs Zensical via uvx; needs uv on PATH (no venv to activate).
 site-build:
+    mkdir -p website/docs/demo
+    cp demo/redate.mp4 website/docs/demo/
     cd website && uvx {{zensical}} build --clean
 
 # Serve the docs site locally at 0.0.0.0:8099 (Ctrl-C to stop).
 site-serve:
+    mkdir -p website/docs/demo
+    cp demo/redate.mp4 website/docs/demo/
     cd website && uvx {{zensical}} serve -a 0.0.0.0:8099
