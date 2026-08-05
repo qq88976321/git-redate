@@ -25,11 +25,43 @@ makes it:
 ## Install
 
 ```
+curl -fsSL https://github.com/qq88976321/git-redate/releases/latest/download/install.sh | sh
+```
+
+This downloads the prebuilt binary for your platform, checks it against
+the release's sha256, and installs it into `~/.local/bin` - no `sudo`
+anywhere. With it on your `PATH`, git runs `git redate ...` as a
+subcommand.
+
+| Platform | Release asset |
+|----------|---------------|
+| Linux x86_64 | `git-redate-x86_64-unknown-linux-musl.tar.gz` |
+| Linux aarch64 | `git-redate-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `git-redate-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `git-redate-aarch64-apple-darwin.tar.gz` |
+
+The Linux builds are statically linked against musl, so they do not care
+which glibc your distribution ships. Windows is not covered - build from
+source there.
+
+Rather read the script first, install somewhere else, or pin a version:
+
+```
+curl -fsSL https://github.com/qq88976321/git-redate/releases/latest/download/install.sh -o install.sh
+less install.sh
+sh install.sh --to ~/bin --version v0.1.0
+```
+
+Uninstall by deleting the binary (`rm ~/.local/bin/git-redate`).
+
+### From source
+
+```
 cargo install --path .
 ```
 
-This builds a `git-redate` binary; with it on your `PATH`, git runs
-`git redate ...` as a subcommand. Requires Rust 1.85+ (set by gitoxide).
+Requires Rust 1.85+ (set by gitoxide). No system `git` or `libgit2` is
+needed at runtime either way.
 
 ## Usage
 

@@ -17,6 +17,16 @@ shelling out to `git`.
 - **Safe** - a reflog entry and a printed `git reset --hard` undo command
   on every write, plus a `--dry-run` preview.
 
+## Install
+
+```
+curl -fsSL https://github.com/qq88976321/git-redate/releases/latest/download/install.sh | sh
+```
+
+A checksum-verified prebuilt binary for Linux and macOS, installed into
+`~/.local/bin` without `sudo`. See [Install](install.md) for the flags,
+the platform list, and building from source.
+
 ## At a glance
 
 ```
@@ -26,8 +36,8 @@ git redate --root          # edit the entire history
 git redate --dry-run HEAD~5
 ```
 
-See [Install](install.md) to build it and [Usage](usage.md) for the key
-bindings, edit modes, configuration, and recovery.
+See [Usage](usage.md) for the key bindings, edit modes, configuration,
+and recovery.
 
 Signed commits are re-signed with your git signing config (SSH or
 OpenPGP), so `git log --show-signature` stays Good; `--no-sign` drops
