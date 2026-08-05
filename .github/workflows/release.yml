@@ -4,7 +4,17 @@
 # (cargo-release).
 #
 # The release-notes job curates the Release body from CHANGELOG data via
-# git-cliff (cliff.toml) instead of GitHub's default auto-notes.
+# git-cliff (cliff.toml) instead of GitHub's default auto-notes, and
+# attaches install.sh so the documented one-liner
+#
+#   curl -fsSL https://github.com/qq88976321/git-redate/releases/latest/download/install.sh | sh
+#
+# always runs the installer that shipped with that release. install.sh
+# depends on the asset naming below (`git-redate-<target>.tar.gz` plus a
+# `git-redate-<target>.sha256` sidecar); change one and change the other.
+#
+# Linux builds target musl, so a single binary per architecture runs on
+# every distribution regardless of its glibc version.
 name: release
 
 on:
@@ -35,6 +45,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.git-cliff.outputs.content }}
+          # Publishes the installer as a release asset, which is what makes
+          # `releases/latest/download/install.sh` resolve.
+          files: install.sh
 
   upload:
     needs: release-notes
@@ -42,7 +55,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -51,9 +66,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Neither musl target is the runner's host triple, so the upload
+      # action builds them with cross. Installing cross from a prebuilt
+      # binary here keeps it from falling back to `cargo install cross`,
+      # which compiles it from source on every matrix leg.
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cross
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: git-redate
           target: ${{ matrix.target }}
           checksum: sha256
+          # Match the `--locked` the ci workflow builds with.
+          locked: true
           token: ${{ secrets.GITHUB_TOKEN }}
