@@ -29,6 +29,20 @@ install-dev:
 test:
     cargo test
 
+# Lint the shell scripts we ship (install.sh is executed by users
+# straight off a release asset, so it has to be POSIX sh clean).
+# Enforced in CI; kept out of `gate` so the gate does not silently
+# skip a step on a machine without shellcheck.
+lint-sh:
+    shellcheck -s sh install.sh scripts/test-install.sh
+
+# End-to-end round trip for install.sh against a fake release tree
+# served over file://. Builds the musl asset first, so it needs
+# `rustup target add x86_64-unknown-linux-musl`. This is the only way
+# to exercise the install path without cutting a real release.
+test-install:
+    sh scripts/test-install.sh
+
 # Full quality gate; run before every commit.
 gate:
     cargo fmt --check
