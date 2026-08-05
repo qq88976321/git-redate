@@ -23,6 +23,15 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  # install.sh is executed by users straight off a release asset, so a
+  # bashism or an unquoted expansion in it is a shipped defect. Mirrors
+  # `just lint-sh`; shellcheck is preinstalled on the runner image.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -s sh install.sh scripts/test-install.sh
+
   clippy:
     needs: fmt
     runs-on: ubuntu-latest
